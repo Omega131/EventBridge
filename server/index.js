@@ -18,6 +18,13 @@ const { testSupabaseConnection } = require('./supabase');
 //      index.js only wires things together; webhook.js holds the actual logic.
 const { handleWebhook } = require('./webhook');
 
+// WHAT: Import the mock downstream handlers from mockDownstream.js.
+// WHY: Provides an endpoint to simulate an external receiver, and a mode toggle to simulate outages.
+const {
+  handleMockDownstream,
+  handleMockDownstreamMode
+} = require('./mockDownstream');
+
 
 // ─── STARTUP GUARD: WEBHOOK_SECRET ────────────────────────────────────────
 
@@ -76,6 +83,13 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// WHAT: Register mock downstream service endpoints.
+// WHY: Simulates an external API that our pipeline forwards events to.
+// POST /api/mock-downstream receives forwarded events (replies 200 or 503 based on health mode).
+// POST /api/mock-downstream/mode allows toggling between healthy (true) and unhealthy (false).
+app.post('/api/mock-downstream', handleMockDownstream);
+app.post('/api/mock-downstream/mode', handleMockDownstreamMode);
+
 
 // ─── START THE SERVER ─────────────────────────────────────────────────────
 
@@ -89,8 +103,10 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('====================================================');
   console.log('EventBridge Express server is running on port ' + PORT);
-  console.log('Health check:  http://localhost:' + PORT + '/api/health');
-  console.log('Webhook route: http://localhost:' + PORT + '/api/webhook');
+  console.log('Health check:    http://localhost:' + PORT + '/api/health');
+  console.log('Webhook route:   http://localhost:' + PORT + '/api/webhook');
+  console.log('Mock downstream: http://localhost:' + PORT + '/api/mock-downstream');
+  console.log('Mock mode route: http://localhost:' + PORT + '/api/mock-downstream/mode');
   console.log('====================================================');
 
   // WHAT: Test the Supabase connection once when the server starts.

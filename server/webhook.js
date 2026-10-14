@@ -1,67 +1,18 @@
 // WHAT: Import Node's built-in crypto module.
-// WHY: We need it to create SHA-256 hashes and to use timingSafeEqual,
-// which compares two values in a way that prevents timing-based attacks.
+// WHY: We need it to create SHA-256 hashes for the idempotency key fallback.
 const crypto = require('crypto');
 
 // WHAT: Import the Supabase client we created in supabase.js.
 // WHY: We need it to insert and query rows in the "events" table.
 const { supabase } = require('./supabase');
 
+// WHAT: Import the checkSecret authentication helper from auth.js.
+// WHY: We reuse the exact same timing-safe secret check across webhooks and mock endpoints.
+const { checkSecret } = require('./auth');
 
-// ─── HELPER FUNCTION 1: checkSecret ────────────────────────────────────────
-
-// WHAT: This function checks whether the incoming request carries the correct
-//       webhook secret in its "x-webhook-secret" header.
-// WHY:  Without a secret check, anyone on the internet could POST fake events
-//       to our endpoint. This is the first line of defence.
-//
-// How it works step by step:
-//   1. Read the header value from the request.
-//   2. Hash both the incoming value and our stored secret with SHA-256.
-//      (We never compare raw strings because that can leak information.)
-//   3. Use crypto.timingSafeEqual to compare the two hashes.
-//      (timingSafeEqual always takes the same amount of time regardless of
-//       how many characters match, which blocks "timing attacks".)
-//   4. Return true if they match, false otherwise.
-function checkSecret(req) {
-  // WHAT: Read the header the caller sent.
-  // WHY: This is where the caller is expected to put the shared secret.
-  const incomingHeader = req.headers['x-webhook-secret'];
-
-  // WHAT: If the header is completely absent, reject immediately.
-  // WHY: There is nothing to compare — no need to waste any more time.
-  if (!incomingHeader) {
-    console.log('Secret check failed: x-webhook-secret header is missing.');
-    return false;
-  }
-
-  // WHAT: Hash the expected secret (from our environment variable).
-  // WHY: We compare hashes, not plain-text strings, so the raw secret value
-  //      is never held in memory in a form that could be accidentally logged.
-  const expectedHash = crypto
-    .createHash('sha256')
-    .update(process.env.WEBHOOK_SECRET)
-    .digest();
-
-  // WHAT: Hash the value the caller provided in the header.
-  // WHY: Same reason — we only ever compare hashes.
-  const incomingHash = crypto
-    .createHash('sha256')
-    .update(incomingHeader)
-    .digest();
-
-  // WHAT: Compare the two hashes using timingSafeEqual.
-  // WHY: crypto.timingSafeEqual prevents timing attacks. It returns true only
-  //      if every byte matches. Both buffers must be the same length, which
-  //      is guaranteed here because both are SHA-256 digests (32 bytes each).
-  const secretsMatch = crypto.timingSafeEqual(expectedHash, incomingHash);
-
-  if (!secretsMatch) {
-    console.log('Secret check failed: x-webhook-secret header did not match.');
-  }
-
-  return secretsMatch;
-}
+// WHAT: Import the runPipeline function from pipeline.js.
+// WHY: Once an event is successfully stored with status 'Received', we run it through the pipeline.
+const { runPipeline } = require('./pipeline');
 
 
 // ─── HELPER FUNCTION 2: getIdempotencyKey ──────────────────────────────────
@@ -269,11 +220,21 @@ async function handleWebhook(req, res) {
   }
 
   console.log('Responding 201 — new event saved.');
-  return res.status(201).json({
+  res.status(201).json({
     id: result.id,
     status: result.status,
     duplicate: false,
   });
+
+  // WHAT: Trigger the pipeline for the new event in the background.
+  // WHY: We respond with 201 first so the caller does not wait for downstream HTTP calls.
+  // We do NOT use await, and we add .catch to log any unexpected errors safely.
+  // Notice: Duplicates (handled above) do NOT trigger this background pipeline.
+  console.log('Triggering background pipeline for new event ID:', result.id);
+  runPipeline(result.id).catch((pipelineError) => {
+    console.error('Background pipeline error for event ' + result.id + ':', pipelineError.message);
+  });
+  return;
 }
 
 
