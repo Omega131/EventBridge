@@ -1,6 +1,6 @@
 // WHAT: Load environment variables from the server/.env file using dotenv.
-// WHY: We want to configure server settings (like PORT and Supabase secrets)
-// without hardcoding sensitive or environment-specific values in our code.
+// WHY: We want to configure server settings (like PORT, secrets, and database credentials)
+// without hardcoding sensitive values in our source code.
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -9,13 +9,17 @@ dotenv.config();
 // and build REST APIs for our web application.
 const express = require('express');
 
+// WHAT: Import cookie-parser middleware.
+// WHY: Parses the "Cookie" header sent by browsers and populates req.cookies,
+// which our authentication system needs to read the "eventbridge_token" session cookie.
+const cookieParser = require('cookie-parser');
+
 // WHAT: Import the Supabase connection test function from our supabase.js file.
 // WHY: We want to test our database connection right when the backend server launches.
 const { testSupabaseConnection } = require('./supabase');
 
 // WHAT: Import the webhook route handler from webhook.js.
-// WHY: Keeping the webhook logic in its own file makes index.js easy to read.
-//      index.js only wires things together; webhook.js holds the actual logic.
+// WHY: Keeps the webhook listening and idempotency logic isolated.
 const { handleWebhook } = require('./webhook');
 
 // WHAT: Import the mock downstream handlers from mockDownstream.js.
@@ -25,46 +29,66 @@ const {
   handleMockDownstreamMode
 } = require('./mockDownstream');
 
+// WHAT: Import our new API routes (login, logout, me, public events, admin event details).
+// WHY: Keeping route handlers in routes.js keeps index.js clean and focused on server configuration.
+const apiRoutes = require('./routes');
 
-// ─── STARTUP GUARD: WEBHOOK_SECRET ────────────────────────────────────────
+
+// ─── STARTUP GUARDS: REQUIRED SECRETS ─────────────────────────────────────
 
 // WHAT: Check that WEBHOOK_SECRET is set BEFORE starting the server.
-// WHY:  If this variable is missing, the webhook endpoint cannot verify incoming
-//       requests and would accept events from anyone. That is a security hole.
-//       It is far safer to refuse to start than to run in an insecure state.
+// WHY:  Without a webhook secret, incoming webhook requests cannot be verified.
 if (!process.env.WEBHOOK_SECRET) {
   console.error('====================================================');
   console.error('ERROR: WEBHOOK_SECRET is not set in server/.env.');
   console.error('The server cannot start without a webhook secret.');
   console.error('Add WEBHOOK_SECRET to your server/.env file and restart.');
   console.error('====================================================');
-  process.exit(1); // WHAT: Exit the Node process with an error code.
-                   // WHY:  Stops the server immediately so the problem is impossible to miss.
+  process.exit(1);
+}
+
+// WHAT: Check that ADMIN_PASSWORD is set BEFORE starting the server.
+// WHY:  Without an admin password, the login system cannot authenticate the dashboard user.
+if (!process.env.ADMIN_PASSWORD) {
+  console.error('====================================================');
+  console.error('ERROR: ADMIN_PASSWORD is not set in server/.env.');
+  console.error('The server cannot start without an admin password.');
+  console.error('Add ADMIN_PASSWORD to your server/.env file and restart.');
+  console.error('====================================================');
+  process.exit(1);
+}
+
+// WHAT: Check that SESSION_SECRET is set BEFORE starting the server.
+// WHY:  Without a session secret, JWT tokens cannot be signed or verified securely.
+if (!process.env.SESSION_SECRET) {
+  console.error('====================================================');
+  console.error('ERROR: SESSION_SECRET is not set in server/.env.');
+  console.error('The server cannot start without a session secret.');
+  console.error('Add SESSION_SECRET to your server/.env file and restart.');
+  console.error('====================================================');
+  process.exit(1);
 }
 
 
-// ─── EXPRESS APP SETUP ────────────────────────────────────────────────────
+// ─── EXPRESS APP SETUP & MIDDLEWARE ORDERING ──────────────────────────────
 
 // WHAT: Create an instance of an Express application.
-// WHY: The "app" object is where we register our API routes and middleware.
 const app = express();
 
-// ─── ROUTES ───────────────────────────────────────────────────────────────
+// WHAT: Enable cookie parsing across all routes.
+// WHY: Cookie parsing only reads the "Cookie" HTTP header string into req.cookies.
+// It does NOT consume the incoming request body stream, so placing it here is completely safe.
+app.use(cookieParser());
+
+
+// ─── ROUTES & BODY PARSERS ────────────────────────────────────────────────
 
 // IMPORTANT: The webhook route is registered FIRST — before app.use(express.json()).
 // WHY: Express runs middleware in the order you register it. If express.json() ran
 //      first, it would read and consume the raw bytes from the request body stream,
 //      leaving nothing for express.raw() to work with. By placing the webhook route
 //      above the global JSON middleware, express.raw() gets to buffer the body bytes
-//      as a raw Buffer, which is exactly what we need in webhook.js.
-
-// WHAT: Register POST /api/webhook with express.raw() middleware on this route only.
-// WHY:  express.raw({ type: '*/*' }) stores the full request body as a Buffer object
-//       (raw bytes). We convert it to a string ourselves in webhook.js so we can:
-//         1. Hash the exact bytes for the idempotency key fallback.
-//         2. JSON.parse it with our own error handling.
-//       { type: '*/*' } means we accept any Content-Type, which matters because
-//       different webhook providers send different content type headers.
+//      as a raw Buffer, which is exactly what we need in webhook.js for SHA-256 hashing.
 app.post(
   '/api/webhook',
   express.raw({ type: '*/*' }), // WHAT: Buffer the body as raw bytes for this route only.
@@ -72,8 +96,8 @@ app.post(
 );
 
 // WHAT: Add built-in JSON middleware for all other routes.
-// WHY: Future routes (like GET /api/events) will send and receive normal JSON.
-//      This only applies to routes registered AFTER this line.
+// WHY: All subsequent routes (login, mock downstream, events) receive standard JSON payloads.
+// This only applies to routes registered AFTER this line.
 app.use(express.json());
 
 // WHAT: Define a GET route at "/api/health".
@@ -85,21 +109,20 @@ app.get('/api/health', (req, res) => {
 
 // WHAT: Register mock downstream service endpoints.
 // WHY: Simulates an external API that our pipeline forwards events to.
-// POST /api/mock-downstream receives forwarded events (replies 200 or 503 based on health mode).
-// POST /api/mock-downstream/mode allows toggling between healthy (true) and unhealthy (false).
 app.post('/api/mock-downstream', handleMockDownstream);
 app.post('/api/mock-downstream/mode', handleMockDownstreamMode);
+
+// WHAT: Mount our new API router under the /api prefix.
+// WHY: Connects /api/login, /api/logout, /api/me, /api/events, and /api/events/:id.
+app.use('/api', apiRoutes);
 
 
 // ─── START THE SERVER ─────────────────────────────────────────────────────
 
 // WHAT: Determine which port the server should listen on.
-// WHY: In production or local environments, PORT can be set via environment variables.
-//      If no PORT is set, we fallback to port 3000 as the default.
 const PORT = process.env.PORT || 3000;
 
 // WHAT: Start the Express server and begin listening for incoming network requests.
-// WHY: This keeps our Node process running in the background waiting for HTTP traffic.
 app.listen(PORT, () => {
   console.log('====================================================');
   console.log('EventBridge Express server is running on port ' + PORT);
@@ -107,6 +130,8 @@ app.listen(PORT, () => {
   console.log('Webhook route:   http://localhost:' + PORT + '/api/webhook');
   console.log('Mock downstream: http://localhost:' + PORT + '/api/mock-downstream');
   console.log('Mock mode route: http://localhost:' + PORT + '/api/mock-downstream/mode');
+  console.log('Login route:     http://localhost:' + PORT + '/api/login');
+  console.log('Events route:    http://localhost:' + PORT + '/api/events');
   console.log('====================================================');
 
   // WHAT: Test the Supabase connection once when the server starts.
