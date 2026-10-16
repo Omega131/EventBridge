@@ -18,9 +18,13 @@ const { checkPassword, createToken, requireLogin } = require('./auth');
 const { supabase } = require('./supabase');
 
 // WHAT: Import SSE client management functions from sse.js.
-// WHY: The GET /api/stream route needs to register incoming browser connections
-// and unregister them when the connection is closed.
-const { addClient, removeClient } = require('./sse');
+// WHY: The GET /api/stream route needs to register incoming browser connections,
+// and the retry route needs publishEvent to broadcast status changes.
+const { addClient, removeClient, publishEvent } = require('./sse');
+
+// WHAT: Import runPipeline from pipeline.js.
+// WHY: Once an event is claimed for retry, we run it through the delivery pipeline again.
+const { runPipeline } = require('./pipeline');
 
 
 // ─── ROUTE: GET /api/stream (PUBLIC SSE STREAM) ───────────────────────────
@@ -273,6 +277,138 @@ router.get('/events/:id', requireLogin, async (req, res) => {
     return res.status(500).json({
       error: 'Internal Server Error',
       message: 'Could not fetch event details.'
+    });
+  }
+});
+
+
+// ─── ROUTE 6: POST /api/events/:id/retry (ADMIN ONLY) ──────────────────────
+// WHAT: Atomically claim and retry a previously failed event.
+// WHY: Allows an administrator to trigger re-delivery of an event whose downstream call failed.
+// Protected by requireLogin middleware.
+router.post('/events/:id/retry', requireLogin, async (req, res) => {
+  const eventId = req.params.id;
+  console.log('--- Incoming POST /api/events/' + eventId + '/retry (admin) ---');
+  console.log('Retry requested for event ID:', eventId);
+
+  // ── STEP 1: VALIDATE UUID FORMAT ─────────────────────────────────────────
+  // WHAT: Validate that :id looks like a valid UUID before talking to the database.
+  // WHY: Rejects malformed IDs immediately with 400 Bad Request and avoids DB type errors.
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(eventId)) {
+    console.log('Retry rejected: Invalid UUID format supplied:', eventId);
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Invalid event ID format. Must be a valid UUID.'
+    });
+  }
+
+  try {
+    // ── STEP 2: ATOMICALLY CLAIM THE EVENT IN A SINGLE DATABASE UPDATE ──────
+    // WHAT: Update status to 'Received' WHERE id = :id AND status = 'Failed', returning the updated row.
+    // WHY: CRITICAL CONCURRENCY RULE: By combining the status check ('Failed') and the status change
+    // ('Received') into a SINGLE SQL UPDATE statement, PostgreSQL guarantees atomicity.
+    // If two administrators click retry at the exact same millisecond, only ONE request can win the update.
+    // We NEVER read the row first and then update it, because between the read and the update another
+    // process could have modified it (a race condition).
+    console.log('Attempting to claim event ID:', eventId, 'for retry...');
+    const nowIsoString = new Date().toISOString();
+
+    const { data: updatedRows, error: updateError } = await supabase
+      .from('events')
+      .update({
+        status: 'Received',
+        updated_at: nowIsoString
+      })
+      .eq('id', eventId)
+      .eq('status', 'Failed')
+      .select();
+
+    // ── STEP 3A: HANDLE DATABASE ERRORS ────────────────────────────────────
+    // WHAT: Check if Supabase returned a database execution error.
+    // WHY: Keep the server stable and log the error for debugging without crashing.
+    if (updateError) {
+      console.error('Database error while attempting to claim event for retry:', updateError.message);
+      return res.status(500).json({
+        error: 'Internal Server Error',
+        message: 'Could not process event retry. Please try again.'
+      });
+    }
+
+    // ── STEP 3B: ZERO ROWS RETURNED (CLAIM FAILED) ─────────────────────────
+    // WHAT: Zero rows matched our UPDATE condition (id = :id AND status = 'Failed').
+    // WHY: This means either the event does not exist at all, or it is not currently in 'Failed' state.
+    // We do a second lookup of the ID ONLY to decide whether to return 404 or 409.
+    if (!updatedRows || updatedRows.length === 0) {
+      console.log('Claim failed for event ID:', eventId, '(0 rows updated). Checking event status...');
+
+      const { data: existingRows, error: lookupError } = await supabase
+        .from('events')
+        .select('id, status')
+        .eq('id', eventId);
+
+      if (lookupError) {
+        console.error('Database error during retry lookup for event ID ' + eventId + ':', lookupError.message);
+        return res.status(500).json({
+          error: 'Internal Server Error',
+          message: 'Could not verify event status.'
+        });
+      }
+
+      // Event does not exist in the database -> 404 Not Found
+      if (!existingRows || existingRows.length === 0) {
+        console.log('Retry rejected: Event does not exist for ID:', eventId);
+        return res.status(404).json({
+          error: 'Not Found',
+          message: 'Event not found.'
+        });
+      }
+
+      // Event exists, but its status was not 'Failed' (e.g. 'Received' or 'Completed') -> 409 Conflict
+      const currentStatus = existingRows[0].status;
+      console.log('Retry rejected: not Failed for ID ' + eventId + '. Current status is "' + currentStatus + '".');
+      return res.status(409).json({
+        error: 'Event is not in Failed state (already retrying or completed)'
+      });
+    }
+
+    // ── STEP 3C: ONE ROW RETURNED (CLAIM WON) ──────────────────────────────
+    // WHAT: Exactly one row was updated. This request won the claim!
+    // WHY: We now publish the new 'Received' status to all connected dashboards,
+    // reply 202 Accepted to the caller, and kick off runPipeline in the background.
+    const claimedRow = updatedRows[0];
+    console.log('Claimed ' + eventId + ' successfully for retry.');
+
+    // WHAT: Broadcast the newly claimed 'Received' row over SSE.
+    // WHY: All open dashboards immediately show the badge transition back to "Received".
+    try {
+      publishEvent(claimedRow);
+    } catch (publishErr) {
+      console.error('Error publishing retry status via SSE:', publishErr.message);
+    }
+
+    // WHAT: Reply 202 Accepted.
+    // WHY: HTTP 202 indicates that the retry request has been accepted for processing,
+    // but the actual delivery pipeline will complete asynchronously.
+    res.status(202).json({
+      id: claimedRow.id,
+      status: 'Received'
+    });
+
+    // WHAT: Launch the background pipeline without awaiting it.
+    // WHY: The client receives a fast 202 response and does not wait for external HTTP calls.
+    // runPipeline will reload the payload from the database and handle timeout & retry attempts.
+    console.log('Triggering background pipeline for retried event ID:', eventId);
+    runPipeline(eventId).catch((pipelineErr) => {
+      console.error('Unexpected pipeline error during retry of event ' + eventId + ':', pipelineErr.message);
+    });
+    return;
+
+  } catch (err) {
+    console.error('Unexpected error in POST /api/events/:id/retry:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not process event retry.'
     });
   }
 });
