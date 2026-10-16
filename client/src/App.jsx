@@ -70,75 +70,69 @@ function mergeEvent(list, incoming) {
 }
 
 // ─── MAIN APPLICATION COMPONENT ──────────────────────────────────────────────
-// WHAT: Main Application Component for EventBridge.
-// WHY: Coordinates the entire frontend: holds top-level state, manages Server-Sent Events (SSE)
-// live stream connection, handles API calls, and passes props down to child components.
 function App() {
 
-  // ─── STATE MANAGEMENT ───────────────────────────────────────────────────
+  // ─── THEME ENGINE (LIGHT / DARK) ─────────────────────────────────────────
+  // WHAT: Theme state ('light' or 'dark').
+  // WHY: Defaults to the user's system setting, remembers choice in localStorage inside try/catch.
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem('eventbridge-theme');
+      if (saved === 'dark' || saved === 'light') {
+        return saved;
+      }
+    } catch (_) {}
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches
+    ) {
+      return 'dark';
+    }
+    return 'light';
+  });
 
-  // WHAT: Whether the current visitor is authenticated as an admin.
-  // WHY: Controls whether to display the login form or the sign-out button,
-  // and whether table rows can be clicked to inspect payloads.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('eventbridge-theme', theme);
+    } catch (_) {}
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  }
+
+
+  // ─── APPLICATION STATE ───────────────────────────────────────────────────
+
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-
-  // WHAT: Array of event summary rows.
-  // WHY: Displays the main event timeline in the EventTable.
   const [events, setEvents] = useState([]);
-
-  // WHAT: Loading indicator for the initial events list.
-  // WHY: Informs the user when events are first loading from the backend.
   const [isLoadingEvents, setIsLoadingEvents] = useState(true);
-
-  // WHAT: Error message for event list fetching.
-  // WHY: Informs the user if the backend is down or unreachable.
   const [eventsError, setEventsError] = useState(null);
 
-  // WHAT: ID of the currently selected event row.
-  // WHY: Tracks which row is highlighted in the table.
   const [selectedEventId, setSelectedEventId] = useState(null);
-
-  // WHAT: Complete event row details for the selected event (from GET /api/events/:id).
-  // WHY: Contains the full webhook payload and failure reason for the EventDetails panel.
   const [selectedEventDetails, setSelectedEventDetails] = useState(null);
-
-  // WHAT: Loading indicator for the event details panel.
-  // WHY: Displays a spinner/status while fetching single-event details.
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
-
-  // WHAT: Error message for event details fetching.
-  // WHY: Displays an error if fetching event details fails.
   const [detailsError, setDetailsError] = useState(null);
 
-  // WHAT: Loading indicator for the login form submission.
-  // WHY: Disables the button while POST /api/login is in flight.
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  // WHAT: Error message from a failed login attempt (e.g. "Wrong password").
-  // WHY: Gives direct feedback on invalid credentials.
   const [loginError, setLoginError] = useState(null);
+  const [isLoginCardOpen, setIsLoginCardOpen] = useState(false);
 
-  // WHAT: Connection state of the Server-Sent Events (SSE) stream.
-  // WHY: Values are 'connecting', 'live', or 'reconnecting'. Controls the header badge.
   const [liveStatus, setLiveStatus] = useState('connecting');
-
-  // WHAT: ID of the event row that just received a live update.
-  // WHY: Triggers a short 1.5-second CSS highlight animation on that table row.
   const [recentlyChangedId, setRecentlyChangedId] = useState(null);
-
-  // WHAT: Health status of the mock downstream service (true = Healthy, false = Down).
-  // WHY: Controls mock status badge for visitors and toggle switch state for admins.
   const [mockHealthy, setMockHealthy] = useState(true);
-
-  // WHAT: Array of active toast notifications: [{ id, text, kind }]
-  // WHY: Displays non-intrusive alerts for admin actions, errors, and system events.
   const [toasts, setToasts] = useState([]);
+
+  // Toolbar & filter state
+  const [statusFilter, setStatusFilter] = useState('All'); // 'All' | 'Received' | 'Completed' | 'Failed'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isWebhookCardOpen, setIsWebhookCardOpen] = useState(false);
 
 
   // ─── TOAST NOTIFICATION SYSTEM ───────────────────────────────────────────
 
-  // WHAT: Show a toast notification that automatically dismisses after 4 seconds.
-  // WHY: Simple beginner-friendly notification system without external libraries.
   function showToast(text, kind = 'info') {
     const id = Date.now() + '-' + Math.random().toString(36).substring(2, 9);
     console.log('App: Showing toast (' + kind + '):', text);
@@ -154,10 +148,6 @@ function App() {
 
   // ─── REFS FOR LIVE STREAM ───────────────────────────────────────────────
 
-  // WHAT: Refs to store the latest values of selectedEventId and isLoggedIn.
-  // WHY: The SSE event listener runs inside a useEffect with empty dependencies ([]).
-  // Using refs ensures the listener always reads the current user selection and login state
-  // without needing to disconnect and reconnect the EventSource whenever selection or login changes.
   const selectedEventIdRef = useRef(selectedEventId);
   useEffect(() => {
     selectedEventIdRef.current = selectedEventId;
@@ -168,15 +158,11 @@ function App() {
     isLoggedInRef.current = isLoggedIn;
   }, [isLoggedIn]);
 
-  // WHAT: Timer ref for clearing the 1.5s row highlight.
-  // WHY: Prevents conflicting timers if multiple updates arrive rapidly.
   const highlightTimerRef = useRef(null);
 
 
   // ─── AUTHENTICATION HELPERS ──────────────────────────────────────────────
 
-  // WHAT: Centralized sign-out handler used by logout button, 401 handlers, and "Sign out everywhere".
-  // WHY: Resets authentication status and cleans up any sensitive selected event details.
   function handleSignedOut() {
     console.log('App: Clearing admin session state.');
     setIsLoggedIn(false);
@@ -188,8 +174,6 @@ function App() {
 
   // ─── API CALLS ──────────────────────────────────────────────────────────
 
-  // WHAT: Check if the user already has a valid session cookie.
-  // WHY: Runs on initial page load so a refreshed page keeps the user signed in.
   async function checkAuthStatus() {
     console.log('App: Checking session status via GET /api/me...');
     try {
@@ -205,8 +189,6 @@ function App() {
     }
   }
 
-  // WHAT: Fetch current mock downstream status from GET /api/mock/status.
-  // WHY: Runs once on startup so that both visitors and admins see the correct health status right away.
   async function fetchMockStatus() {
     console.log('App: Fetching mock status via GET /api/mock/status...');
     try {
@@ -215,16 +197,12 @@ function App() {
         const data = await response.json();
         console.log('App: Initial mock downstream status received:', data);
         setMockHealthy(data.healthy === true);
-      } else {
-        console.warn('App: Mock status request returned status:', response.status);
       }
     } catch (err) {
       console.error('App: Failed to fetch mock status:', err.message);
     }
   }
 
-  // WHAT: Fetch the latest 100 events from the backend.
-  // WHY: Populates the EventTable with the latest public event list.
   async function fetchEvents() {
     console.log('App: Fetching events via GET /api/events...');
     setEventsError(null);
@@ -241,9 +219,8 @@ function App() {
       const data = await response.json();
       console.log('App: Received ' + data.length + ' events from server. Merging row by row...');
 
-      // WHAT: Merge the fetched list row by row with mergeEvent instead of replacing the whole state.
-      // WHY: It stops an old response (e.g. from an in-flight GET /api/events request that started
-      // before an event changed state) from overwriting a newer live update that arrived via SSE.
+      // WHAT: Merge row by row with mergeEvent instead of replacing whole state.
+      // WHY: Stops an old response from overwriting a newer live update.
       setEvents((previousEvents) => {
         let mergedList = previousEvents;
         for (let i = 0; i < data.length; i++) {
@@ -259,8 +236,6 @@ function App() {
     }
   }
 
-  // WHAT: Handle admin login submission.
-  // WHY: Calls POST /api/login with the password and sets session state.
   async function handleLogin(password) {
     console.log('App: Attempting login...');
     setIsLoggingIn(true);
@@ -282,6 +257,7 @@ function App() {
         console.log('App: Login successful.');
         setIsLoggedIn(true);
         setLoginError(null);
+        setIsLoginCardOpen(false);
         showToast('Signed in successfully', 'success');
       } else {
         console.log('App: Login rejected:', data.error || 'Wrong password');
@@ -295,8 +271,6 @@ function App() {
     }
   }
 
-  // WHAT: Handle admin sign out.
-  // WHY: Calls POST /api/logout to clear the session cookie and updates local state.
   async function handleLogout() {
     console.log('App: Logging out...');
     try {
@@ -313,9 +287,6 @@ function App() {
     }
   }
 
-  // WHAT: Fetch complete details for a single event ID.
-  // WHY: Used when an admin clicks an event row, and ALSO called automatically when an
-  // SSE "event-update" arrives for the event that is currently open in the details panel.
   async function fetchEventDetails(eventId, isBackgroundRefresh = false) {
     if (!isLoggedInRef.current) {
       return;
@@ -359,9 +330,10 @@ function App() {
     }
   }
 
-  // WHAT: Select an event row in the table when clicked.
   function handleSelectEvent(eventId) {
     if (!isLoggedIn) {
+      setIsLoginCardOpen(true);
+      showToast('Please sign in as admin to view event payloads', 'info');
       return;
     }
     console.log('App: Selecting event ID:', eventId);
@@ -369,7 +341,6 @@ function App() {
     fetchEventDetails(eventId, false);
   }
 
-  // WHAT: Deselect the current event and close the details panel.
   function handleCloseDetails() {
     setSelectedEventId(null);
     setSelectedEventDetails(null);
@@ -379,8 +350,6 @@ function App() {
 
   // ─── INITIALIZATION (useEffect) ──────────────────────────────────────────
 
-  // WHAT: Run once on mount to verify session and get downstream health status.
-  // WHY: Restores admin session on page refresh and loads initial mock downstream mode.
   useEffect(() => {
     console.log('App: Mounted. Initializing auth and mock downstream status...');
     checkAuthStatus();
@@ -390,30 +359,21 @@ function App() {
 
   // ─── SERVER-SENT EVENTS (SSE) LIVE UPDATES ───────────────────────────────
 
-  // WHAT: Open an EventSource connection to /api/stream when the App mounts.
-  // WHY: Subscribes to real-time event updates pushed by the server, eliminating polling.
   useEffect(() => {
     console.log('App: Connecting to SSE stream at /api/stream...');
     const es = new EventSource('/api/stream');
 
-    // WHAT: Stream connection opened successfully.
-    // WHY: Set liveStatus to "live" and re-fetch the full list from GET /api/events.
-    // Re-fetching merges row by row so any events received while connecting are synced without
-    // overwriting newer live updates.
     es.onopen = () => {
       console.log('App: SSE stream connected. Setting status to live and syncing event list.');
       setLiveStatus('live');
       fetchEvents();
     };
 
-    // WHAT: Listen for "event-update" custom events pushed from the server.
-    // WHY: Broadcast whenever a webhook is received, completed, or failed.
     es.addEventListener('event-update', (event) => {
       try {
         const updatedEvent = JSON.parse(event.data);
         console.log('App: Received SSE event-update for ID:', updatedEvent.id, 'Status:', updatedEvent.status);
 
-        // Highlight table row for 1.5 seconds
         setRecentlyChangedId(updatedEvent.id);
         if (highlightTimerRef.current) {
           clearTimeout(highlightTimerRef.current);
@@ -422,11 +382,8 @@ function App() {
           setRecentlyChangedId(null);
         }, 1500);
 
-        // WHAT: Use mergeEvent with stale-update guard for every "event-update" message.
-        // WHY: Protects against out-of-order network messages overwriting newer status with older status.
         setEvents((previousEvents) => mergeEvent(previousEvents, updatedEvent));
 
-        // Refresh details panel if this event is currently selected by a signed-in admin
         if (isLoggedInRef.current && selectedEventIdRef.current === updatedEvent.id) {
           console.log('App: Live update affects selected event. Refreshing details for ID:', updatedEvent.id);
           fetchEventDetails(updatedEvent.id, true);
@@ -437,8 +394,6 @@ function App() {
       }
     });
 
-    // WHAT: Listen for "events-cleared" broadcast from server.
-    // WHY: Fired when an admin clears all events. Empties the list, closes details, and shows a toast.
     es.addEventListener('events-cleared', () => {
       console.log('App: Received SSE events-cleared event. Resetting list and details.');
       setEvents([]);
@@ -448,8 +403,6 @@ function App() {
       showToast('All events were cleared', 'info');
     });
 
-    // WHAT: Listen for "mock-status" broadcast from server.
-    // WHY: Fired when downstream mock status changes. Keeps mockHealthy in sync across all clients.
     es.addEventListener('mock-status', (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -460,15 +413,11 @@ function App() {
       }
     });
 
-    // WHAT: Handle connection drops or network interruptions.
-    // WHY: EventSource automatically attempts to reconnect on its own; we update the badge to "Reconnecting...".
     es.onerror = () => {
       console.warn('App: SSE stream disconnected. EventSource will automatically attempt to reconnect...');
       setLiveStatus('reconnecting');
     };
 
-    // WHAT: Cleanup function called when the App component unmounts.
-    // WHY: Calling es.close() closes the HTTP connection to prevent memory leaks and dangling sockets.
     return () => {
       console.log('App: Cleaning up EventSource connection.');
       if (highlightTimerRef.current) {
@@ -479,174 +428,447 @@ function App() {
   }, []);
 
 
+  // ─── COMPUTED STATS (LATEST 100 EVENTS) ──────────────────────────────────
+  const totalEvents = events.length;
+  const completedCount = events.filter((e) => e.status === 'Completed').length;
+  const failedCount = events.filter((e) => e.status === 'Failed').length;
+  const receivedCount = events.filter((e) => e.status === 'Received').length;
+  const successRate =
+    totalEvents > 0
+      ? ((completedCount / totalEvents) * 100).toFixed(1) + '%'
+      : '0.0%';
+
+
+  // ─── COMPUTED FILTERED EVENTS FOR TABLE ──────────────────────────────────
+  const displayedEvents = events.filter((event) => {
+    if (statusFilter !== 'All' && event.status !== statusFilter) {
+      return false;
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      if (!event.id.toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+
+  // ─── WEBHOOK CURL HELPERS ────────────────────────────────────────────────
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const webhookUrl = `${origin}/api/webhook`;
+  const curlExample = `curl -X POST ${webhookUrl} \\
+  -H "Content-Type: application/json" \\
+  -H "x-webhook-secret: YOUR_SECRET" \\
+  -d '{"event":"order.created","amount":149.99,"customer":"cust_123"}'`;
+
+  async function handleCopyCurl() {
+    try {
+      await navigator.clipboard.writeText(curlExample);
+      showToast('Copied curl command to clipboard', 'info');
+    } catch (err) {
+      console.error('Failed to copy curl:', err);
+    }
+  }
+
+  async function handleCopyWebhookUrl() {
+    try {
+      await navigator.clipboard.writeText(webhookUrl);
+      showToast('Copied webhook URL to clipboard', 'info');
+    } catch (err) {
+      console.error('Failed to copy webhook URL:', err);
+    }
+  }
+
+
   // ─── RENDER ──────────────────────────────────────────────────────────────
 
   return (
-    <div className="app-container">
+    <div className="dashboard-shell">
 
-      {/* ─── HEADER BAR ──────────────────────────────────────────────────── */}
-      <header className="app-header">
-        <div className="header-branding">
-          <h1 className="app-title">EventBridge</h1>
-          <p className="app-tagline">Live webhook event monitor</p>
+      {/* ─── HEADER ──────────────────────────────────────────────────────── */}
+      <header className="dashboard-header">
+        <div className="header-left">
+          {/* Logo Mark SVG */}
+          <div className="brand-logo" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 11a9 9 0 0 1 9 9" />
+              <path d="M4 4a16 16 0 0 1 16 16" />
+              <circle cx="5" cy="19" r="1" fill="currentColor" />
+            </svg>
+          </div>
+          <div>
+            <span className="brand-title">EventBridge</span>
+            <span className="brand-subtitle">Webhook Ingestion Monitor</span>
+          </div>
         </div>
 
-        {/* Header actions: Live Stream badge and Admin auth status */}
-        <div className="header-actions">
-          {/* Status badge: Live vs Reconnecting... */}
+        <div className="header-right">
+          {/* Live / Reconnecting Status Pill */}
           {liveStatus === 'live' ? (
-            <span className="live-badge live-badge-active" title="Connected to live event stream">
-              <span className="live-dot"></span> Live
-            </span>
-          ) : (
-            <span className="live-badge live-badge-reconnecting" title="Connecting or reconnecting to stream...">
-              <span className="reconnecting-dot"></span> Reconnecting...
-            </span>
-          )}
-
-          {isLoggedIn ? (
-            <div className="admin-status-badge">
-              <span className="admin-pill">Admin Mode</span>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="btn btn-secondary"
-              >
-                Sign Out
-              </button>
+            <div className="status-pill status-pill-live" title="Live SSE stream connected">
+              <span className="status-dot status-dot-live" aria-hidden="true" />
+              <span>Live</span>
             </div>
           ) : (
-            <span className="public-indicator">Public Viewer</span>
+            <div className="status-pill status-pill-reconnecting" title="Connecting or reconnecting to SSE stream...">
+              <span className="status-dot status-dot-reconnecting" aria-hidden="true" />
+              <span>Reconnecting</span>
+            </div>
+          )}
+
+          {/* Theme Toggle Button */}
+          <button
+            type="button"
+            className="btn-icon theme-toggle"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            aria-label={`Toggle theme (currently ${theme} mode)`}
+          >
+            {theme === 'dark' ? (
+              // Sun SVG
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" />
+                <line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              </svg>
+            ) : (
+              // Moon SVG
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
+          </button>
+
+          {/* Admin Panel (Dropdown menu if signed in, or read-only downstream pill if visitor) */}
+          <AdminPanel
+            isLoggedIn={isLoggedIn}
+            mockHealthy={mockHealthy}
+            showToast={showToast}
+            onSignedOut={handleSignedOut}
+            onLogout={handleLogout}
+          />
+
+          {/* Visitor Sign In Button (when signed out) */}
+          {!isLoggedIn && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setIsLoginCardOpen((prev) => !prev)}
+            >
+              Sign In
+            </button>
           )}
         </div>
       </header>
 
 
       {/* ─── MAIN CONTENT ────────────────────────────────────────────────── */}
-      <main className="app-main">
+      <main className="dashboard-main">
 
-        {/* Admin Controls (visible when signed in) OR Public downstream indicator (when signed out) */}
-        <section className="section-admin" style={{ marginBottom: '16px' }}>
-          <AdminPanel
-            isLoggedIn={isLoggedIn}
-            mockHealthy={mockHealthy}
-            showToast={showToast}
-            onSignedOut={handleSignedOut}
-          />
-        </section>
-
-        {/* If the user is NOT logged in, show the small login card */}
-        {!isLoggedIn && (
-          <section className="section-login">
+        {/* Optional Collapsible Login Form Card */}
+        {!isLoggedIn && isLoginCardOpen && (
+          <section className="login-section">
             <LoginForm
               onLogin={handleLogin}
               isLoading={isLoggingIn}
               errorMessage={loginError}
+              onCancel={() => setIsLoginCardOpen(false)}
             />
           </section>
         )}
 
-        {/* Table Controls */}
-        <div className="table-controls">
-          <div className="controls-left">
-            <h2 className="section-title">Webhook Events</h2>
-            <span className="events-count">
-              {events.length} {events.length === 1 ? 'event' : 'events'} recorded
-            </span>
-          </div>
-        </div>
+        {/* ─── 2. SEND A WEBHOOK CARD (COLLAPSIBLE) ─────────────────────── */}
+        <section className="webhook-helper-card">
+          <div
+            className="webhook-helper-header"
+            onClick={() => setIsWebhookCardOpen((prev) => !prev)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setIsWebhookCardOpen((prev) => !prev);
+              }
+            }}
+            aria-expanded={isWebhookCardOpen}
+          >
+            <div className="webhook-helper-title-group">
+              <div className="terminal-icon-badge" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="helper-card-heading">Send a webhook</h2>
+                <p className="helper-card-subheading">
+                  POST payload to <code className="endpoint-pill">{webhookUrl}</code>
+                </p>
+              </div>
+            </div>
 
-        {/* Server error banner if backend is unreachable */}
+            <div className="helper-header-actions">
+              <button
+                type="button"
+                className="btn btn-secondary btn-xs"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopyWebhookUrl();
+                }}
+              >
+                Copy URL
+              </button>
+              <svg
+                className={`chevron-icon ${isWebhookCardOpen ? 'chevron-open' : ''}`}
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
+          </div>
+
+          {isWebhookCardOpen && (
+            <div className="webhook-helper-body">
+              <div className="curl-box">
+                <div className="curl-box-header">
+                  <span className="curl-label">Example curl request</span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-xs"
+                    onClick={handleCopyCurl}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    <span>Copy curl</span>
+                  </button>
+                </div>
+                <pre className="curl-code font-mono">{curlExample}</pre>
+              </div>
+
+              <div className="webhook-notice">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+                <span>
+                  The <code>x-webhook-secret</code> header is verified server-side. Replace <code>YOUR_SECRET</code> with your shared team key (shared separately). Real keys are never displayed here.
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
+
+
+        {/* ─── 3. STATS ROW (LATEST 100 EVENTS) ─────────────────────────── */}
+        <section className="stats-row" aria-label="Event statistics (latest 100 events)">
+          <div className="stat-card">
+            <span className="stat-label">Total in view</span>
+            <div className="stat-value-group">
+              <span className="stat-value tabular-nums font-mono">{totalEvents}</span>
+              <span className="stat-sublabel">latest 100 events</span>
+            </div>
+          </div>
+
+          <div className="stat-card stat-card-completed">
+            <span className="stat-label">Completed</span>
+            <div className="stat-value-group">
+              <span className="stat-value text-success tabular-nums font-mono">{completedCount}</span>
+              <span className="stat-sublabel">delivered downstream</span>
+            </div>
+          </div>
+
+          <div className="stat-card stat-card-failed">
+            <span className="stat-label">Failed</span>
+            <div className="stat-value-group">
+              <span className="stat-value text-danger tabular-nums font-mono">{failedCount}</span>
+              <span className="stat-sublabel">requires attention</span>
+            </div>
+          </div>
+
+          <div className="stat-card stat-card-received">
+            <span className="stat-label">Received</span>
+            <div className="stat-value-group">
+              <span className="stat-value text-received tabular-nums font-mono">{receivedCount}</span>
+              <span className="stat-sublabel">in processing / retry</span>
+            </div>
+          </div>
+
+          <div className="stat-card stat-card-rate">
+            <span className="stat-label">Success Rate</span>
+            <div className="stat-value-group">
+              <span className="stat-value tabular-nums font-mono">{successRate}</span>
+              <span className="stat-sublabel">delivery efficiency</span>
+            </div>
+          </div>
+        </section>
+
+
+        {/* ─── 4. TOOLBAR (FILTER CHIPS & SEARCH BOX) ───────────────────── */}
+        <section className="toolbar-section">
+          {/* Filter Chips */}
+          <div className="filter-chips" role="group" aria-label="Filter events by status">
+            {[
+              { label: 'All', count: totalEvents },
+              { label: 'Received', count: receivedCount },
+              { label: 'Completed', count: completedCount },
+              { label: 'Failed', count: failedCount }
+            ].map((chip) => (
+              <button
+                key={chip.label}
+                type="button"
+                className={`filter-chip ${statusFilter === chip.label ? 'active' : ''}`}
+                onClick={() => setStatusFilter(chip.label)}
+              >
+                <span>{chip.label}</span>
+                <span className="chip-count tabular-nums font-mono">{chip.count}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Search Box */}
+          <div className="search-box">
+            <svg className="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              type="text"
+              className="search-input font-mono"
+              placeholder="Search by event ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Filter events by UUID"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="search-clear-btn"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </section>
+
+
+        {/* ─── SERVER ERROR BANNER (IF DOWN) ────────────────────────────── */}
         {eventsError && (
           <div className="banner banner-error" role="alert">
-            <p>{eventsError}</p>
-            <button onClick={fetchEvents} className="btn-retry-inline">Retry Connection</button>
+            <div className="banner-content">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <span>{eventsError}</span>
+            </div>
+            <button type="button" onClick={fetchEvents} className="btn btn-secondary btn-xs">
+              Try again
+            </button>
           </div>
         )}
 
-        {/* Loading state indicator for events table */}
-        {isLoadingEvents && events.length === 0 ? (
-          <div className="loading-container">
-            <div className="spinner"></div>
-            <p>Loading events from server...</p>
-          </div>
-        ) : (
-          /* Events Table with live row highlight */
+
+        {/* ─── 5. EVENTS TABLE ──────────────────────────────────────────── */}
+        <section className="table-section">
           <EventTable
-            events={events}
+            events={displayedEvents}
             selectedEventId={selectedEventId}
             onSelectEvent={handleSelectEvent}
             isLoggedIn={isLoggedIn}
             recentlyChangedId={recentlyChangedId}
+            isLoading={isLoadingEvents}
+            showToast={showToast}
           />
-        )}
-
-        {/* ─── EVENT DETAILS PANEL (UNDER TABLE) ─────────────────────────── */}
-        {/* Only rendered when an event is selected by an admin */}
-        {selectedEventId && (
-          <section className="section-details">
-            <EventDetails
-              eventDetails={selectedEventDetails}
-              isLoading={isLoadingDetails}
-              errorMessage={detailsError}
-              onClose={handleCloseDetails}
-              isLoggedIn={isLoggedIn}
-              onSignedOut={handleSignedOut}
-              showToast={showToast}
-            />
-          </section>
-        )}
+        </section>
 
       </main>
 
+
+      {/* ─── 6. SLIDE-OVER EVENT DETAILS DRAWER ─────────────────────────── */}
+      {selectedEventId && (
+        <EventDetails
+          eventDetails={selectedEventDetails}
+          isLoading={isLoadingDetails}
+          errorMessage={detailsError}
+          onClose={handleCloseDetails}
+          isLoggedIn={isLoggedIn}
+          onSignedOut={handleSignedOut}
+          showToast={showToast}
+        />
+      )}
+
+
       {/* ─── FOOTER ──────────────────────────────────────────────────────── */}
-      <footer className="app-footer">
-        <p>EventBridge • College Recruitment Project • Task ID: EventBridge</p>
+      <footer className="dashboard-footer">
+        <p>EventBridge • Enterprise Webhook Ingestion Engine • Tabular Monitor</p>
       </footer>
 
-      {/* ─── TOAST NOTIFICATIONS CONTAINER ───────────────────────────────── */}
-      {/* WHAT: Fixed container with aria-live="polite" to host toast notifications. */}
-      {/* WHY: Ensures accessible announcements without shifting layout or interrupting page flow. */}
+
+      {/* ─── 8. TOAST NOTIFICATIONS CONTAINER ────────────────────────────── */}
       <div
         className="toast-container"
         aria-live="polite"
-        style={{
-          position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '10px',
-          zIndex: 10000,
-          pointerEvents: 'none'
-        }}
+        role="region"
+        aria-label="System notifications"
       >
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`toast toast-${toast.kind || 'info'}`}
+            className={`toast-item toast-${toast.kind || 'info'}`}
             role="status"
-            style={{
-              pointerEvents: 'auto',
-              padding: '12px 18px',
-              borderRadius: '6px',
-              backgroundColor:
-                toast.kind === 'error'
-                  ? '#dc2626'
-                  : toast.kind === 'success'
-                  ? '#16a34a'
-                  : toast.kind === 'warning'
-                  ? '#d97706'
-                  : '#2563eb',
-              color: '#ffffff',
-              boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.1)',
-              fontSize: '14px',
-              fontWeight: '500',
-              maxWidth: '380px',
-              wordBreak: 'break-word'
-            }}
           >
-            {toast.text}
+            {/* Kind Icon */}
+            <div className="toast-icon-wrap" aria-hidden="true">
+              {toast.kind === 'success' ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : toast.kind === 'error' ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              ) : toast.kind === 'warning' ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="16" x2="12" y2="12" />
+                  <line x1="12" y1="8" x2="12.01" y2="8" />
+                </svg>
+              )}
+            </div>
+
+            <span className="toast-text">{toast.text}</span>
           </div>
         ))}
       </div>

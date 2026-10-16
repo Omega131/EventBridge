@@ -1,24 +1,56 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ConfirmModal from './ConfirmModal';
 
 // WHAT: AdminPanel component providing administrative controls.
-// WHY: Signed-in admins can toggle downstream mock mode, clear all events, and invalidate all sessions.
+// WHY: Signed-in admins access controls via a clean dropdown menu (mock toggle, clear events, sign out everywhere).
 // Signed-out visitors see only a read-only indicator of downstream health.
-function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
+function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut, onLogout }) {
   // WHAT: State to control opening and closing the ConfirmModal.
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+
+  // WHAT: State to control opening and closing the Admin Dropdown menu.
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef(null);
 
   // WHAT: Loading states for in-flight administrative requests.
   const [isTogglingMock, setIsTogglingMock] = useState(false);
   const [isClearingEvents, setIsClearingEvents] = useState(false);
   const [isSigningOutEverywhere, setIsSigningOutEverywhere] = useState(false);
 
+  // WHAT: Close dropdown on click outside or Escape key.
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsDropdownOpen(false);
+      }
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setIsDropdownOpen(false);
+      }
+    }
+
+    if (isDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isDropdownOpen]);
+
   // ─── 1. SIGNED-OUT VISITOR VIEW ──────────────────────────────────────────
   // WHAT: Signed-out visitors see only a read-only label indicating downstream health.
   if (!isLoggedIn) {
     return (
-      <div className="admin-panel admin-panel-public" style={{ display: 'inline-flex', alignItems: 'center', margin: '8px 0' }}>
-        <span className="downstream-label">
+      <div className="status-pill status-pill-downstream" title="Mock Downstream Status">
+        <span
+          className={`status-dot ${mockHealthy ? 'status-dot-green' : 'status-dot-red'}`}
+          aria-hidden="true"
+        />
+        <span>
           Downstream: <strong>{mockHealthy ? 'Healthy' : 'Down'}</strong>
         </span>
       </div>
@@ -26,9 +58,6 @@ function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
   }
 
   // ─── 2. TOGGLE MOCK DOWNSTREAM MODE ──────────────────────────────────────
-  // WHAT: Send POST /api/mock/mode with the inverted healthy value.
-  // WHY: Allows the admin to simulate downstream outages.
-  // RULE: "Do not flip it locally; the 'mock-status' stream message updates it. Show a toast on failure."
   async function handleToggleMock() {
     console.log('AdminPanel: Toggling mock downstream mode from', mockHealthy, 'to', !mockHealthy);
     setIsTogglingMock(true);
@@ -68,8 +97,6 @@ function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
   }
 
   // ─── 3. CLEAR ALL EVENTS ─────────────────────────────────────────────────
-  // WHAT: Send POST /api/admin/clear-events with {"confirm": "DELETE ALL"}.
-  // WHY: Resets the events table in Supabase.
   async function handleClearEventsConfirm() {
     console.log('AdminPanel: Executing clear-events...');
     setIsClearingEvents(true);
@@ -103,6 +130,7 @@ function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
 
       // Close modal and notify via toast
       setIsConfirmModalOpen(false);
+      setIsDropdownOpen(false);
       showToast(`Cleared ${data.deleted} event(s) from database`, 'success');
 
     } catch (err) {
@@ -114,8 +142,6 @@ function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
   }
 
   // ─── 4. SIGN OUT EVERYWHERE ──────────────────────────────────────────────
-  // WHAT: Send POST /api/admin/sign-out-everywhere.
-  // WHY: Increments database auth_version, revoking all existing admin tokens across all devices.
   async function handleSignOutEverywhere() {
     console.log('AdminPanel: Triggering sign out everywhere...');
     setIsSigningOutEverywhere(true);
@@ -139,50 +165,157 @@ function AdminPanel({ isLoggedIn, mockHealthy, showToast, onSignedOut }) {
       showToast('Could not sign out everywhere. Please check your connection.', 'error');
     } finally {
       setIsSigningOutEverywhere(false);
-      // In all cases, set loggedIn to false locally
+      setIsDropdownOpen(false);
       if (onSignedOut) {
         onSignedOut();
       }
     }
   }
 
-  // ─── 5. SIGNED-IN ADMIN VIEW ─────────────────────────────────────────────
+  // ─── 5. SIGNED-IN ADMIN VIEW (DROPDOWN MENU) ─────────────────────────────
   return (
-    <div className="admin-panel admin-panel-active" style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '12px 0' }}>
-      <div className="admin-controls-group" style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        {/* Mock Downstream Toggle */}
-        <button
-          type="button"
-          onClick={handleToggleMock}
-          disabled={isTogglingMock}
-          className={`btn ${mockHealthy ? 'btn-mock-healthy' : 'btn-mock-down'}`}
-          title="Toggle mock downstream between Healthy and Down"
-        >
-          Mock downstream: {mockHealthy ? 'Healthy' : 'Down'}
-        </button>
+    <div className="admin-menu-container" ref={dropdownRef}>
+      {/* Downstream Mock Pill in Header */}
+      <button
+        type="button"
+        className="status-pill status-pill-interactive"
+        onClick={handleToggleMock}
+        disabled={isTogglingMock}
+        title="Click to toggle downstream mock mode"
+        aria-label={`Mock downstream is currently ${mockHealthy ? 'Healthy' : 'Down'}. Click to toggle.`}
+      >
+        <span
+          className={`status-dot ${mockHealthy ? 'status-dot-green' : 'status-dot-red'}`}
+          aria-hidden="true"
+        />
+        <span>Mock: <strong>{mockHealthy ? 'Healthy' : 'Down'}</strong></span>
+      </button>
 
-        {/* Clear all events */}
-        <button
-          type="button"
-          onClick={() => setIsConfirmModalOpen(true)}
-          disabled={isClearingEvents}
-          className="btn btn-warning"
-          title="Permanently delete all events from the database"
+      {/* Admin Menu Trigger Button */}
+      <button
+        type="button"
+        className={`btn btn-secondary btn-admin-trigger ${isDropdownOpen ? 'active' : ''}`}
+        onClick={() => setIsDropdownOpen((prev) => !prev)}
+        aria-expanded={isDropdownOpen}
+        aria-haspopup="true"
+        aria-label="Admin settings and actions menu"
+      >
+        {/* User Shield Icon */}
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+        <span>Admin</span>
+        {/* Chevron Icon */}
+        <svg
+          className={`chevron-icon ${isDropdownOpen ? 'chevron-open' : ''}`}
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
         >
-          Clear all events
-        </button>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
 
-        {/* Sign out everywhere */}
-        <button
-          type="button"
-          onClick={handleSignOutEverywhere}
-          disabled={isSigningOutEverywhere}
-          className="btn btn-secondary"
-          title="Invalidate all active sessions across all devices"
-        >
-          {isSigningOutEverywhere ? 'Signing out...' : 'Sign out everywhere'}
-        </button>
-      </div>
+      {/* Floating Dropdown Menu */}
+      {isDropdownOpen && (
+        <div className="admin-dropdown-menu" role="menu">
+          <div className="dropdown-section-title">Downstream Simulation</div>
+
+          {/* Toggle mock mode */}
+          <button
+            type="button"
+            className="dropdown-item"
+            role="menuitem"
+            onClick={handleToggleMock}
+            disabled={isTogglingMock}
+          >
+            <div className="dropdown-item-content">
+              <span className="dropdown-item-label">
+                Mock Downstream: <strong>{mockHealthy ? 'Healthy' : 'Down'}</strong>
+              </span>
+              <span className="dropdown-item-desc">
+                {mockHealthy ? 'Click to simulate downstream failure' : 'Click to restore downstream health'}
+              </span>
+            </div>
+            <span className={`status-dot ${mockHealthy ? 'status-dot-green' : 'status-dot-red'}`} />
+          </button>
+
+          <div className="dropdown-divider" />
+          <div className="dropdown-section-title">Database Administration</div>
+
+          {/* Clear all events */}
+          <button
+            type="button"
+            className="dropdown-item dropdown-item-danger"
+            role="menuitem"
+            onClick={() => {
+              setIsDropdownOpen(false);
+              setIsConfirmModalOpen(true);
+            }}
+            disabled={isClearingEvents}
+          >
+            <div className="dropdown-item-content">
+              <span className="dropdown-item-label">Clear All Events</span>
+              <span className="dropdown-item-desc">Permanently empty the events table</span>
+            </div>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+          </button>
+
+          <div className="dropdown-divider" />
+          <div className="dropdown-section-title">Session Management</div>
+
+          {/* Sign out everywhere */}
+          <button
+            type="button"
+            className="dropdown-item"
+            role="menuitem"
+            onClick={handleSignOutEverywhere}
+            disabled={isSigningOutEverywhere}
+          >
+            <div className="dropdown-item-content">
+              <span className="dropdown-item-label">
+                {isSigningOutEverywhere ? 'Revoking sessions...' : 'Sign Out Everywhere'}
+              </span>
+              <span className="dropdown-item-desc">Invalidate all sessions across all devices</span>
+            </div>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+              <line x1="12" y1="2" x2="12" y2="12" />
+            </svg>
+          </button>
+
+          {/* Regular Sign out */}
+          {onLogout && (
+            <button
+              type="button"
+              className="dropdown-item text-muted"
+              role="menuitem"
+              onClick={() => {
+                setIsDropdownOpen(false);
+                onLogout();
+              }}
+            >
+              <div className="dropdown-item-content">
+                <span className="dropdown-item-label">Sign Out</span>
+              </div>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Confirmation Modal for Clearing Events */}
       <ConfirmModal
