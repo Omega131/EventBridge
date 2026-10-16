@@ -2,8 +2,74 @@ import { useState, useEffect, useRef } from 'react';
 import LoginForm from './components/LoginForm';
 import EventTable from './components/EventTable';
 import EventDetails from './components/EventDetails';
+import AdminPanel from './components/AdminPanel';
 import './App.css';
 
+// ─── STALE-UPDATE GUARD HELPER ───────────────────────────────────────────────
+// WHAT: Merges a single incoming event row into an existing event list using a stale-update guard.
+// WHY: In a live distributed application, HTTP responses and Server-Sent Events can arrive out of order.
+// If a slower full re-fetch (GET /api/events) or delayed network packet resolves AFTER a newer live update
+// has already changed an event's status to "Completed" or "Failed", a naive overwrite would move the event
+// backwards to an old status. By comparing Date.parse(incoming.updated_at) against the stored updated_at,
+// we ensure older updates are ignored and state changes remain strictly monotonic.
+function mergeEvent(list, incoming) {
+  if (!incoming || !incoming.id) {
+    return list;
+  }
+
+  // Parse incoming updated_at timestamp as milliseconds since epoch (fallback to 0 if missing)
+  const incomingUpdatedAtMs = incoming.updated_at ? Date.parse(incoming.updated_at) : 0;
+  let found = false;
+  const nextList = [];
+
+  // Plain loop through the existing list
+  for (let i = 0; i < list.length; i++) {
+    const existing = list[i];
+    if (existing.id === incoming.id) {
+      found = true;
+      const existingUpdatedAtMs = existing.updated_at ? Date.parse(existing.updated_at) : 0;
+
+      // WHAT: Replace existing row ONLY if incoming.updated_at is newer than or equal to stored
+      // WHY: Stops an older response or delayed SSE packet from overwriting a newer live update.
+      if (incomingUpdatedAtMs >= existingUpdatedAtMs) {
+        nextList.push(incoming);
+      } else {
+        console.log(
+          'mergeEvent: Ignored older update for event ' +
+            incoming.id +
+            '. Incoming updated_at (' +
+            incoming.updated_at +
+            ') < stored (' +
+            existing.updated_at +
+            ')'
+        );
+        nextList.push(existing);
+      }
+    } else {
+      nextList.push(existing);
+    }
+  }
+
+  // WHAT: If the id was not in the list, append it as a newly discovered event
+  if (!found) {
+    nextList.push(incoming);
+  }
+
+  // WHAT: Return the list sorted by created_at descending (newest first), then id descending as tie-breaker
+  // WHY: Matches the canonical server sort order so the UI stays consistent.
+  nextList.sort((a, b) => {
+    const timeA = a.created_at ? Date.parse(a.created_at) : 0;
+    const timeB = b.created_at ? Date.parse(b.created_at) : 0;
+    if (timeB !== timeA) {
+      return timeB - timeA; // Descending by creation time
+    }
+    return (b.id || '').localeCompare(a.id || ''); // Descending by ID as tie-breaker
+  });
+
+  return nextList;
+}
+
+// ─── MAIN APPLICATION COMPONENT ──────────────────────────────────────────────
 // WHAT: Main Application Component for EventBridge.
 // WHY: Coordinates the entire frontend: holds top-level state, manages Server-Sent Events (SSE)
 // live stream connection, handles API calls, and passes props down to child components.
@@ -16,7 +82,7 @@ function App() {
   // and whether table rows can be clicked to inspect payloads.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-  // WHAT: Array of event summary rows fetched from GET /api/events.
+  // WHAT: Array of event summary rows.
   // WHY: Displays the main event timeline in the EventTable.
   const [events, setEvents] = useState([]);
 
@@ -60,6 +126,31 @@ function App() {
   // WHY: Triggers a short 1.5-second CSS highlight animation on that table row.
   const [recentlyChangedId, setRecentlyChangedId] = useState(null);
 
+  // WHAT: Health status of the mock downstream service (true = Healthy, false = Down).
+  // WHY: Controls mock status badge for visitors and toggle switch state for admins.
+  const [mockHealthy, setMockHealthy] = useState(true);
+
+  // WHAT: Array of active toast notifications: [{ id, text, kind }]
+  // WHY: Displays non-intrusive alerts for admin actions, errors, and system events.
+  const [toasts, setToasts] = useState([]);
+
+
+  // ─── TOAST NOTIFICATION SYSTEM ───────────────────────────────────────────
+
+  // WHAT: Show a toast notification that automatically dismisses after 4 seconds.
+  // WHY: Simple beginner-friendly notification system without external libraries.
+  function showToast(text, kind = 'info') {
+    const id = Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+    console.log('App: Showing toast (' + kind + '):', text);
+
+    setToasts((previousToasts) => [...previousToasts, { id, text, kind }]);
+
+    setTimeout(() => {
+      console.log('App: Auto-removing toast after 4s:', id);
+      setToasts((previousToasts) => previousToasts.filter((t) => t.id !== id));
+    }, 4000);
+  }
+
 
   // ─── REFS FOR LIVE STREAM ───────────────────────────────────────────────
 
@@ -82,6 +173,19 @@ function App() {
   const highlightTimerRef = useRef(null);
 
 
+  // ─── AUTHENTICATION HELPERS ──────────────────────────────────────────────
+
+  // WHAT: Centralized sign-out handler used by logout button, 401 handlers, and "Sign out everywhere".
+  // WHY: Resets authentication status and cleans up any sensitive selected event details.
+  function handleSignedOut() {
+    console.log('App: Clearing admin session state.');
+    setIsLoggedIn(false);
+    setSelectedEventId(null);
+    setSelectedEventDetails(null);
+    setDetailsError(null);
+  }
+
+
   // ─── API CALLS ──────────────────────────────────────────────────────────
 
   // WHAT: Check if the user already has a valid session cookie.
@@ -101,6 +205,24 @@ function App() {
     }
   }
 
+  // WHAT: Fetch current mock downstream status from GET /api/mock/status.
+  // WHY: Runs once on startup so that both visitors and admins see the correct health status right away.
+  async function fetchMockStatus() {
+    console.log('App: Fetching mock status via GET /api/mock/status...');
+    try {
+      const response = await fetch('/api/mock/status');
+      if (response.ok) {
+        const data = await response.json();
+        console.log('App: Initial mock downstream status received:', data);
+        setMockHealthy(data.healthy === true);
+      } else {
+        console.warn('App: Mock status request returned status:', response.status);
+      }
+    } catch (err) {
+      console.error('App: Failed to fetch mock status:', err.message);
+    }
+  }
+
   // WHAT: Fetch the latest 100 events from the backend.
   // WHY: Populates the EventTable with the latest public event list.
   async function fetchEvents() {
@@ -117,8 +239,18 @@ function App() {
       }
 
       const data = await response.json();
-      console.log('App: Received ' + data.length + ' events from server.');
-      setEvents(data);
+      console.log('App: Received ' + data.length + ' events from server. Merging row by row...');
+
+      // WHAT: Merge the fetched list row by row with mergeEvent instead of replacing the whole state.
+      // WHY: It stops an old response (e.g. from an in-flight GET /api/events request that started
+      // before an event changed state) from overwriting a newer live update that arrived via SSE.
+      setEvents((previousEvents) => {
+        let mergedList = previousEvents;
+        for (let i = 0; i < data.length; i++) {
+          mergedList = mergeEvent(mergedList, data[i]);
+        }
+        return mergedList;
+      });
     } catch (err) {
       console.error('App: Error fetching events:', err.message);
       setEventsError('Unable to load events. Make sure the backend server is running on port 3000.');
@@ -150,6 +282,7 @@ function App() {
         console.log('App: Login successful.');
         setIsLoggedIn(true);
         setLoginError(null);
+        showToast('Signed in successfully', 'success');
       } else {
         console.log('App: Login rejected:', data.error || 'Wrong password');
         setLoginError(data.error === 'Wrong password' ? 'Wrong password' : (data.error || 'Login failed'));
@@ -174,9 +307,8 @@ function App() {
     } catch (err) {
       console.error('App: Logout request failed:', err.message);
     } finally {
-      setIsLoggedIn(false);
-      setSelectedEventId(null);
-      setSelectedEventDetails(null);
+      handleSignedOut();
+      showToast('Signed out successfully', 'info');
       console.log('App: User logged out.');
     }
   }
@@ -201,8 +333,9 @@ function App() {
       });
 
       if (response.status === 401) {
-        console.warn('App: Session expired while fetching details.');
-        setIsLoggedIn(false);
+        console.warn('App: Session expired while fetching details (401).');
+        handleSignedOut();
+        showToast('Session expired. Please sign in again.', 'error');
         setDetailsError('Your session has expired. Please sign in again.');
         return;
       }
@@ -246,25 +379,27 @@ function App() {
 
   // ─── INITIALIZATION (useEffect) ──────────────────────────────────────────
 
-  // WHAT: Run once on mount to verify existing authentication session.
-  // WHY: If the admin refreshed their browser, we restore their signed-in state immediately.
+  // WHAT: Run once on mount to verify session and get downstream health status.
+  // WHY: Restores admin session on page refresh and loads initial mock downstream mode.
   useEffect(() => {
-    console.log('App: Mounted. Initializing auth status...');
+    console.log('App: Mounted. Initializing auth and mock downstream status...');
     checkAuthStatus();
+    fetchMockStatus();
   }, []);
 
 
   // ─── SERVER-SENT EVENTS (SSE) LIVE UPDATES ───────────────────────────────
 
   // WHAT: Open an EventSource connection to /api/stream when the App mounts.
-  // WHY: Subscribes to real-time event updates pushed by the server, eliminating the need to poll.
+  // WHY: Subscribes to real-time event updates pushed by the server, eliminating polling.
   useEffect(() => {
     console.log('App: Connecting to SSE stream at /api/stream...');
     const es = new EventSource('/api/stream');
 
     // WHAT: Stream connection opened successfully.
     // WHY: Set liveStatus to "live" and re-fetch the full list from GET /api/events.
-    // Re-fetching ensures that any events received while connecting or after a server restart are fully synced.
+    // Re-fetching merges row by row so any events received while connecting are synced without
+    // overwriting newer live updates.
     es.onopen = () => {
       console.log('App: SSE stream connected. Setting status to live and syncing event list.');
       setLiveStatus('live');
@@ -275,12 +410,10 @@ function App() {
     // WHY: Broadcast whenever a webhook is received, completed, or failed.
     es.addEventListener('event-update', (event) => {
       try {
-        // Parse the incoming JSON event data (id, created_at, status, attempt_count)
         const updatedEvent = JSON.parse(event.data);
         console.log('App: Received SSE event-update for ID:', updatedEvent.id, 'Status:', updatedEvent.status);
 
-        // WHAT: Trigger the 1.5-second row fade highlight animation.
-        // WHY: Visually alerts the user to the exact row that was inserted or updated.
+        // Highlight table row for 1.5 seconds
         setRecentlyChangedId(updatedEvent.id);
         if (highlightTimerRef.current) {
           clearTimeout(highlightTimerRef.current);
@@ -289,47 +422,11 @@ function App() {
           setRecentlyChangedId(null);
         }, 1500);
 
-        // WHAT: Merge the updated event into the events state using a plain loop.
-        // WHY: Uses the functional updater setEvents(previous => ...) to prevent stale state issues.
-        setEvents((previousEvents) => {
-          let found = false;
-          const newEventsList = [];
+        // WHAT: Use mergeEvent with stale-update guard for every "event-update" message.
+        // WHY: Protects against out-of-order network messages overwriting newer status with older status.
+        setEvents((previousEvents) => mergeEvent(previousEvents, updatedEvent));
 
-          // Plain for-loop: if the event is already in the list, replace it; otherwise keep existing
-          for (let i = 0; i < previousEvents.length; i++) {
-            const current = previousEvents[i];
-            if (current.id === updatedEvent.id) {
-              // Replace with fresh updated row
-              newEventsList.push(updatedEvent);
-              found = true;
-            } else {
-              newEventsList.push(current);
-            }
-          }
-
-          // If not found in the list, it's a new event: append it
-          if (!found) {
-            newEventsList.push(updatedEvent);
-          }
-
-          // WHAT: Sort the merged list in the exact same order as the server:
-          //       created_at descending (newest first), then id descending as tie-breaker.
-          // WHY: Keeps the timeline in consistent order as new webhooks stream in.
-          newEventsList.sort((a, b) => {
-            const timeA = new Date(a.created_at).getTime();
-            const timeB = new Date(b.created_at).getTime();
-            if (timeB !== timeA) {
-              return timeB - timeA; // Newest first
-            }
-            return b.id.localeCompare(a.id); // Tie-breaker
-          });
-
-          return newEventsList;
-        });
-
-        // WHAT: If an admin currently has this event open in the details panel, re-fetch full details.
-        // WHY: Keeps the open panel (status, attempt count, failure reason) completely up to date.
-        // Users who are not logged in do nothing extra.
+        // Refresh details panel if this event is currently selected by a signed-in admin
         if (isLoggedInRef.current && selectedEventIdRef.current === updatedEvent.id) {
           console.log('App: Live update affects selected event. Refreshing details for ID:', updatedEvent.id);
           fetchEventDetails(updatedEvent.id, true);
@@ -337,6 +434,29 @@ function App() {
 
       } catch (err) {
         console.error('App: Error handling event-update message:', err.message);
+      }
+    });
+
+    // WHAT: Listen for "events-cleared" broadcast from server.
+    // WHY: Fired when an admin clears all events. Empties the list, closes details, and shows a toast.
+    es.addEventListener('events-cleared', () => {
+      console.log('App: Received SSE events-cleared event. Resetting list and details.');
+      setEvents([]);
+      setSelectedEventId(null);
+      setSelectedEventDetails(null);
+      setDetailsError(null);
+      showToast('All events were cleared', 'info');
+    });
+
+    // WHAT: Listen for "mock-status" broadcast from server.
+    // WHY: Fired when downstream mock status changes. Keeps mockHealthy in sync across all clients.
+    es.addEventListener('mock-status', (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('App: Received SSE mock-status event:', data);
+        setMockHealthy(data.healthy === true);
+      } catch (err) {
+        console.error('App: Error handling mock-status message:', err.message);
       }
     });
 
@@ -405,6 +525,16 @@ function App() {
       {/* ─── MAIN CONTENT ────────────────────────────────────────────────── */}
       <main className="app-main">
 
+        {/* Admin Controls (visible when signed in) OR Public downstream indicator (when signed out) */}
+        <section className="section-admin" style={{ marginBottom: '16px' }}>
+          <AdminPanel
+            isLoggedIn={isLoggedIn}
+            mockHealthy={mockHealthy}
+            showToast={showToast}
+            onSignedOut={handleSignedOut}
+          />
+        </section>
+
         {/* If the user is NOT logged in, show the small login card */}
         {!isLoggedIn && (
           <section className="section-login">
@@ -416,7 +546,7 @@ function App() {
           </section>
         )}
 
-        {/* Table Controls (temporary Refresh button removed) */}
+        {/* Table Controls */}
         <div className="table-controls">
           <div className="controls-left">
             <h2 className="section-title">Webhook Events</h2>
@@ -461,10 +591,8 @@ function App() {
               errorMessage={detailsError}
               onClose={handleCloseDetails}
               isLoggedIn={isLoggedIn}
-              onSignedOut={() => {
-                console.warn('App: Signed out due to 401 response from retry.');
-                setIsLoggedIn(false);
-              }}
+              onSignedOut={handleSignedOut}
+              showToast={showToast}
             />
           </section>
         )}
@@ -475,6 +603,53 @@ function App() {
       <footer className="app-footer">
         <p>EventBridge • College Recruitment Project • Task ID: EventBridge</p>
       </footer>
+
+      {/* ─── TOAST NOTIFICATIONS CONTAINER ───────────────────────────────── */}
+      {/* WHAT: Fixed container with aria-live="polite" to host toast notifications. */}
+      {/* WHY: Ensures accessible announcements without shifting layout or interrupting page flow. */}
+      <div
+        className="toast-container"
+        aria-live="polite"
+        style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
+          zIndex: 10000,
+          pointerEvents: 'none'
+        }}
+      >
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`toast toast-${toast.kind || 'info'}`}
+            role="status"
+            style={{
+              pointerEvents: 'auto',
+              padding: '12px 18px',
+              borderRadius: '6px',
+              backgroundColor:
+                toast.kind === 'error'
+                  ? '#dc2626'
+                  : toast.kind === 'success'
+                  ? '#16a34a'
+                  : toast.kind === 'warning'
+                  ? '#d97706'
+                  : '#2563eb',
+              color: '#ffffff',
+              boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.1)',
+              fontSize: '14px',
+              fontWeight: '500',
+              maxWidth: '380px',
+              wordBreak: 'break-word'
+            }}
+          >
+            {toast.text}
+          </div>
+        ))}
+      </div>
 
     </div>
   );

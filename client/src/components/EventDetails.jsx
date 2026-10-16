@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 
 // WHAT: EventDetails component to display full payload, diagnostic info, and retry controls for a selected event.
 // WHY: Only signed-in administrators can access this data to debug webhook failures, inspect payloads, or trigger retries.
-function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLoggedIn, onSignedOut }) {
+function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLoggedIn, onSignedOut, showToast }) {
 
   // ─── STATE MANAGEMENT ───────────────────────────────────────────────────
 
@@ -10,15 +10,9 @@ function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLogged
   // WHY: Disables the button and changes its label to "Retrying..." to prevent multiple clicks.
   const [retrying, setRetrying] = useState(false);
 
-  // WHAT: Feedback message to display after a retry attempt.
-  // WHY: Displays confirmation ("Retry started"), conflict warning (409), or error feedback.
-  const [retryMessage, setRetryMessage] = useState(null);
-
-  // WHAT: Clear retry feedback message whenever a different event is selected.
-  // WHY: Prevents previous messages from lingering when the user clicks a different row.
+  // WHAT: Reset retrying state whenever a different event is selected.
   useEffect(() => {
     setRetrying(false);
-    setRetryMessage(null);
   }, [eventDetails?.id]);
 
 
@@ -33,7 +27,6 @@ function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLogged
 
     console.log('EventDetails: Triggering retry for event ID:', eventDetails.id);
     setRetrying(true);
-    setRetryMessage(null);
 
     try {
       // Send POST request with credentials: 'include' to pass the session cookie
@@ -50,24 +43,25 @@ function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLogged
         // NOTE: We do NOT update the status in local state by hand! The live SSE update
         // will broadcast the change to all open browser windows, keeping everyone in sync.
         console.log('EventDetails: Retry claimed successfully (202 Accepted).');
-        setRetryMessage({
-          type: 'success',
-          text: 'Retry started'
-        });
+        if (showToast) {
+          showToast('Retry started', 'success');
+        }
 
       } else if (response.status === 409) {
         // WHAT: 409 Conflict.
         // WHY: The event is either already retrying (status Received) or has already completed.
         console.warn('EventDetails: Retry rejected (409 Conflict) - already in progress or completed.');
-        setRetryMessage({
-          type: 'warning',
-          text: 'This event is already being retried or has completed.'
-        });
+        if (showToast) {
+          showToast('This event is already being retried or has completed.', 'warning');
+        }
 
       } else if (response.status === 401) {
         // WHAT: 401 Unauthorized.
         // WHY: The user's session cookie expired or is missing. Treat as signed out.
         console.warn('EventDetails: Unauthorized (401). Triggering signed-out state.');
+        if (showToast) {
+          showToast('Session expired. Please sign in again.', 'error');
+        }
         if (onSignedOut) {
           onSignedOut();
         }
@@ -76,20 +70,18 @@ function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLogged
         // WHAT: Any other HTTP error code (e.g. 500 Internal Server Error, 400 Bad Request).
         // WHY: Informs user that the retry could not be processed.
         console.error('EventDetails: Unexpected error status during retry:', response.status);
-        setRetryMessage({
-          type: 'error',
-          text: 'Could not retry. Try again.'
-        });
+        if (showToast) {
+          showToast('Could not retry. Try again.', 'error');
+        }
       }
 
     } catch (err) {
       // WHAT: Handle network failures or dropped connections.
       // WHY: Guarantees the frontend doesn't crash and gives actionable feedback to the user.
       console.error('EventDetails: Network error while requesting retry:', err.message);
-      setRetryMessage({
-        type: 'error',
-        text: 'Could not retry. Try again.'
-      });
+      if (showToast) {
+        showToast('Could not retry. Try again.', 'error');
+      }
 
     } finally {
       // WHAT: Reset retrying back to false.
@@ -172,13 +164,6 @@ function EventDetails({ eventDetails, isLoading, errorMessage, onClose, isLogged
         </div>
       </div>
 
-      {/* WHAT: Display feedback message after clicking Retry. */}
-      {/* WHY: Alerts user if retry was started (202), conflicted (409), or encountered an error. */}
-      {retryMessage && (
-        <div className={`retry-feedback retry-feedback-${retryMessage.type}`} role="status">
-          <span>{retryMessage.text}</span>
-        </div>
-      )}
 
       {/* Metadata Overview Grid */}
       <div className="details-grid">
