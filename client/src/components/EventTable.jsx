@@ -1,7 +1,8 @@
 // WHAT: EventTable component to render the list of webhook events.
 // WHY: Presents the public event timeline with ID, localized timestamp, status badge, and attempt count.
 // Allows signed-in users to click rows to view detailed payload information.
-function EventTable({ events, selectedEventId, onSelectEvent, isLoggedIn }) {
+// Shows a short CSS highlight animation on rows that recently received a live update.
+function EventTable({ events, selectedEventId, onSelectEvent, isLoggedIn, recentlyChangedId }) {
 
   // WHAT: Helper function to determine the CSS class for status badges.
   // WHY: Visual distinction between Received (grey), Completed (green), and Failed (red).
@@ -52,9 +53,13 @@ function EventTable({ events, selectedEventId, onSelectEvent, isLoggedIn }) {
         <tbody>
           {events.map((event) => {
             const isSelected = selectedEventId === event.id;
+            const isRecentlyChanged = recentlyChangedId === event.id;
+
+            // Combine classes: clickable if logged in, selected-row if active in details, highlight-row if data just changed
             const rowClass = [
               isLoggedIn ? 'clickable-row' : '',
-              isSelected ? 'selected-row' : ''
+              isSelected ? 'selected-row' : '',
+              isRecentlyChanged ? 'highlight-row' : ''
             ].filter(Boolean).join(' ');
 
             return (

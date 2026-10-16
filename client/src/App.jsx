@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import LoginForm from './components/LoginForm';
 import EventTable from './components/EventTable';
 import EventDetails from './components/EventDetails';
 import './App.css';
 
 // WHAT: Main Application Component for EventBridge.
-// WHY: Coordinates the entire frontend: holds top-level state, handles API calls,
-// and passes data and callback functions down to child components as props.
+// WHY: Coordinates the entire frontend: holds top-level state, manages Server-Sent Events (SSE)
+// live stream connection, handles API calls, and passes props down to child components.
 function App() {
 
   // ─── STATE MANAGEMENT ───────────────────────────────────────────────────
@@ -20,8 +20,8 @@ function App() {
   // WHY: Displays the main event timeline in the EventTable.
   const [events, setEvents] = useState([]);
 
-  // WHAT: Loading indicator for the events list.
-  // WHY: Informs the user when events are being fetched from the backend.
+  // WHAT: Loading indicator for the initial events list.
+  // WHY: Informs the user when events are first loading from the backend.
   const [isLoadingEvents, setIsLoadingEvents] = useState(true);
 
   // WHAT: Error message for event list fetching.
@@ -52,6 +52,35 @@ function App() {
   // WHY: Gives direct feedback on invalid credentials.
   const [loginError, setLoginError] = useState(null);
 
+  // WHAT: Connection state of the Server-Sent Events (SSE) stream.
+  // WHY: Values are 'connecting', 'live', or 'reconnecting'. Controls the header badge.
+  const [liveStatus, setLiveStatus] = useState('connecting');
+
+  // WHAT: ID of the event row that just received a live update.
+  // WHY: Triggers a short 1.5-second CSS highlight animation on that table row.
+  const [recentlyChangedId, setRecentlyChangedId] = useState(null);
+
+
+  // ─── REFS FOR LIVE STREAM ───────────────────────────────────────────────
+
+  // WHAT: Refs to store the latest values of selectedEventId and isLoggedIn.
+  // WHY: The SSE event listener runs inside a useEffect with empty dependencies ([]).
+  // Using refs ensures the listener always reads the current user selection and login state
+  // without needing to disconnect and reconnect the EventSource whenever selection or login changes.
+  const selectedEventIdRef = useRef(selectedEventId);
+  useEffect(() => {
+    selectedEventIdRef.current = selectedEventId;
+  }, [selectedEventId]);
+
+  const isLoggedInRef = useRef(isLoggedIn);
+  useEffect(() => {
+    isLoggedInRef.current = isLoggedIn;
+  }, [isLoggedIn]);
+
+  // WHAT: Timer ref for clearing the 1.5s row highlight.
+  // WHY: Prevents conflicting timers if multiple updates arrive rapidly.
+  const highlightTimerRef = useRef(null);
+
 
   // ─── API CALLS ──────────────────────────────────────────────────────────
 
@@ -76,7 +105,6 @@ function App() {
   // WHY: Populates the EventTable with the latest public event list.
   async function fetchEvents() {
     console.log('App: Fetching events via GET /api/events...');
-    setIsLoadingEvents(true);
     setEventsError(null);
 
     try {
@@ -153,17 +181,19 @@ function App() {
     }
   }
 
-  // WHAT: Fetch complete details for a single event when its table row is clicked.
-  // WHY: Only signed-in administrators can inspect full payloads and failure reasons.
-  async function handleSelectEvent(eventId) {
-    if (!isLoggedIn) {
+  // WHAT: Fetch complete details for a single event ID.
+  // WHY: Used when an admin clicks an event row, and ALSO called automatically when an
+  // SSE "event-update" arrives for the event that is currently open in the details panel.
+  async function fetchEventDetails(eventId, isBackgroundRefresh = false) {
+    if (!isLoggedInRef.current) {
       return;
     }
 
-    console.log('App: Selecting event ID:', eventId);
-    setSelectedEventId(eventId);
-    setIsLoadingDetails(true);
-    setDetailsError(null);
+    console.log('App: Fetching details for event ID:', eventId, isBackgroundRefresh ? '(background refresh)' : '');
+    if (!isBackgroundRefresh) {
+      setIsLoadingDetails(true);
+      setDetailsError(null);
+    }
 
     try {
       const response = await fetch('/api/events/' + eventId, {
@@ -171,7 +201,6 @@ function App() {
       });
 
       if (response.status === 401) {
-        // Session expired or cookie was cleared
         console.warn('App: Session expired while fetching details.');
         setIsLoggedIn(false);
         setDetailsError('Your session has expired. Please sign in again.');
@@ -187,10 +216,24 @@ function App() {
       setSelectedEventDetails(data);
     } catch (err) {
       console.error('App: Error loading event details:', err.message);
-      setDetailsError('Could not load details for event ' + eventId + ': ' + err.message);
+      if (!isBackgroundRefresh) {
+        setDetailsError('Could not load details for event ' + eventId + ': ' + err.message);
+      }
     } finally {
-      setIsLoadingDetails(false);
+      if (!isBackgroundRefresh) {
+        setIsLoadingDetails(false);
+      }
     }
+  }
+
+  // WHAT: Select an event row in the table when clicked.
+  function handleSelectEvent(eventId) {
+    if (!isLoggedIn) {
+      return;
+    }
+    console.log('App: Selecting event ID:', eventId);
+    setSelectedEventId(eventId);
+    fetchEventDetails(eventId, false);
   }
 
   // WHAT: Deselect the current event and close the details panel.
@@ -203,12 +246,116 @@ function App() {
 
   // ─── INITIALIZATION (useEffect) ──────────────────────────────────────────
 
-  // WHAT: Run once when the App component first mounts into the DOM.
-  // WHY: Loads the initial authentication state and the initial list of events immediately.
+  // WHAT: Run once on mount to verify existing authentication session.
+  // WHY: If the admin refreshed their browser, we restore their signed-in state immediately.
   useEffect(() => {
-    console.log('App: Mounted. Initializing auth and event data...');
+    console.log('App: Mounted. Initializing auth status...');
     checkAuthStatus();
-    fetchEvents();
+  }, []);
+
+
+  // ─── SERVER-SENT EVENTS (SSE) LIVE UPDATES ───────────────────────────────
+
+  // WHAT: Open an EventSource connection to /api/stream when the App mounts.
+  // WHY: Subscribes to real-time event updates pushed by the server, eliminating the need to poll.
+  useEffect(() => {
+    console.log('App: Connecting to SSE stream at /api/stream...');
+    const es = new EventSource('/api/stream');
+
+    // WHAT: Stream connection opened successfully.
+    // WHY: Set liveStatus to "live" and re-fetch the full list from GET /api/events.
+    // Re-fetching ensures that any events received while connecting or after a server restart are fully synced.
+    es.onopen = () => {
+      console.log('App: SSE stream connected. Setting status to live and syncing event list.');
+      setLiveStatus('live');
+      fetchEvents();
+    };
+
+    // WHAT: Listen for "event-update" custom events pushed from the server.
+    // WHY: Broadcast whenever a webhook is received, completed, or failed.
+    es.addEventListener('event-update', (event) => {
+      try {
+        // Parse the incoming JSON event data (id, created_at, status, attempt_count)
+        const updatedEvent = JSON.parse(event.data);
+        console.log('App: Received SSE event-update for ID:', updatedEvent.id, 'Status:', updatedEvent.status);
+
+        // WHAT: Trigger the 1.5-second row fade highlight animation.
+        // WHY: Visually alerts the user to the exact row that was inserted or updated.
+        setRecentlyChangedId(updatedEvent.id);
+        if (highlightTimerRef.current) {
+          clearTimeout(highlightTimerRef.current);
+        }
+        highlightTimerRef.current = setTimeout(() => {
+          setRecentlyChangedId(null);
+        }, 1500);
+
+        // WHAT: Merge the updated event into the events state using a plain loop.
+        // WHY: Uses the functional updater setEvents(previous => ...) to prevent stale state issues.
+        setEvents((previousEvents) => {
+          let found = false;
+          const newEventsList = [];
+
+          // Plain for-loop: if the event is already in the list, replace it; otherwise keep existing
+          for (let i = 0; i < previousEvents.length; i++) {
+            const current = previousEvents[i];
+            if (current.id === updatedEvent.id) {
+              // Replace with fresh updated row
+              newEventsList.push(updatedEvent);
+              found = true;
+            } else {
+              newEventsList.push(current);
+            }
+          }
+
+          // If not found in the list, it's a new event: append it
+          if (!found) {
+            newEventsList.push(updatedEvent);
+          }
+
+          // WHAT: Sort the merged list in the exact same order as the server:
+          //       created_at descending (newest first), then id descending as tie-breaker.
+          // WHY: Keeps the timeline in consistent order as new webhooks stream in.
+          newEventsList.sort((a, b) => {
+            const timeA = new Date(a.created_at).getTime();
+            const timeB = new Date(b.created_at).getTime();
+            if (timeB !== timeA) {
+              return timeB - timeA; // Newest first
+            }
+            return b.id.localeCompare(a.id); // Tie-breaker
+          });
+
+          return newEventsList;
+        });
+
+        // WHAT: If an admin currently has this event open in the details panel, re-fetch full details.
+        // WHY: Keeps the open panel (status, attempt count, failure reason) completely up to date.
+        // Users who are not logged in do nothing extra.
+        if (isLoggedInRef.current && selectedEventIdRef.current === updatedEvent.id) {
+          console.log('App: Live update affects selected event. Refreshing details for ID:', updatedEvent.id);
+          fetchEventDetails(updatedEvent.id, true);
+        }
+
+      } catch (err) {
+        console.error('App: Error handling event-update message:', err.message);
+      }
+    });
+
+    // WHAT: Handle connection drops or network interruptions.
+    // WHY: EventSource automatically attempts to reconnect on its own; we update the badge to "Reconnecting...".
+    es.onerror = () => {
+      console.warn('App: SSE stream disconnected. EventSource will automatically attempt to reconnect...');
+      setLiveStatus('reconnecting');
+    };
+
+    // WHAT: Cleanup function called when the App component unmounts.
+    // WHY: Calling es.close() closes the HTTP connection to prevent memory leaks and dangling sockets.
+    return () => {
+      console.log('App: Cleaning up EventSource connection.');
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+      es.close();
+    };
   }, []);
 
 
@@ -224,8 +371,19 @@ function App() {
           <p className="app-tagline">Live webhook event monitor</p>
         </div>
 
-        {/* Auth section in the header: shows sign-out if logged in */}
+        {/* Header actions: Live Stream badge and Admin auth status */}
         <div className="header-actions">
+          {/* Status badge: Live vs Reconnecting... */}
+          {liveStatus === 'live' ? (
+            <span className="live-badge live-badge-active" title="Connected to live event stream">
+              <span className="live-dot"></span> Live
+            </span>
+          ) : (
+            <span className="live-badge live-badge-reconnecting" title="Connecting or reconnecting to stream...">
+              <span className="reconnecting-dot"></span> Reconnecting...
+            </span>
+          )}
+
           {isLoggedIn ? (
             <div className="admin-status-badge">
               <span className="admin-pill">Admin Mode</span>
@@ -258,26 +416,13 @@ function App() {
           </section>
         )}
 
-        {/* Table Controls & Refresh Button */}
+        {/* Table Controls (temporary Refresh button removed) */}
         <div className="table-controls">
           <div className="controls-left">
             <h2 className="section-title">Webhook Events</h2>
             <span className="events-count">
               {events.length} {events.length === 1 ? 'event' : 'events'} recorded
             </span>
-          </div>
-
-          <div className="controls-right">
-            {/* Temporary refresh button (to be removed in Phase 5 when SSE live updates arrive) */}
-            <button
-              type="button"
-              onClick={fetchEvents}
-              disabled={isLoadingEvents}
-              className="btn btn-outline"
-              title="Reload the events list"
-            >
-              {isLoadingEvents ? 'Refreshing...' : '↻ Refresh List'}
-            </button>
           </div>
         </div>
 
@@ -296,12 +441,13 @@ function App() {
             <p>Loading events from server...</p>
           </div>
         ) : (
-          /* Events Table */
+          /* Events Table with live row highlight */
           <EventTable
             events={events}
             selectedEventId={selectedEventId}
             onSelectEvent={handleSelectEvent}
             isLoggedIn={isLoggedIn}
+            recentlyChangedId={recentlyChangedId}
           />
         )}
 

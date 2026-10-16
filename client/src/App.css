@@ -41,6 +41,62 @@
   gap: 12px;
 }
 
+/* Live Status Badges in Header */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  letter-spacing: 0.02em;
+}
+
+.live-badge-active {
+  background-color: var(--badge-completed-bg);
+  color: var(--badge-completed-text);
+  border: 1px solid rgba(22, 163, 74, 0.25);
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--badge-completed-text);
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
+}
+
+.live-badge-reconnecting {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid rgba(217, 119, 6, 0.3);
+}
+
+.reconnecting-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: #b45309;
+  animation: pulseDot 1s infinite alternate;
+}
+
+@keyframes pulseDot {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .live-badge-reconnecting {
+    background-color: #451a03;
+    color: #fde68a;
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+  .reconnecting-dot {
+    background-color: #fde68a;
+  }
+}
+
 .public-indicator {
   font-size: 0.825rem;
   font-weight: 500;
@@ -240,6 +296,20 @@
 
 .selected-row {
   background-color: rgba(37, 99, 235, 0.08) !important;
+}
+
+/* Row Highlight Animation on Live Update (fades out over ~1.5s) */
+@keyframes rowFadeHighlight {
+  0% {
+    background-color: rgba(37, 99, 235, 0.25);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.highlight-row {
+  animation: rowFadeHighlight 1.5s ease-out forwards;
 }
 
 .event-id-cell code {
