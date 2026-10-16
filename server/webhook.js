@@ -14,6 +14,10 @@ const { checkSecret } = require('./auth');
 // WHY: Once an event is successfully stored with status 'Received', we run it through the pipeline.
 const { runPipeline } = require('./pipeline');
 
+// WHAT: Import publishEvent from sse.js.
+// WHY: Broadcasts real-time event status updates to all connected SSE clients.
+const { publishEvent } = require('./sse');
+
 
 // ─── HELPER FUNCTION 2: getIdempotencyKey ──────────────────────────────────
 
@@ -63,29 +67,35 @@ function getIdempotencyKey(req, rawBodyString) {
 // WHY:  This is the core persistence step. Saving to the database is what
 //       makes the event dashboard work — every webhook becomes a stored record.
 //
-// Returns an object: { success, id, status, duplicate, errorCode }
+// Returns an object: { success, id, status, row, duplicate, errorCode }
 async function saveEvent(idempotencyKey, parsedPayload) {
   console.log('Attempting to insert event with idempotency key:', idempotencyKey);
 
   // WHAT: Try to INSERT a new row into the "events" table.
   // WHY:  The "events" table has a UNIQUE constraint on idempotency_key,
   //       so if we send the same key twice Supabase returns error code "23505".
-  const { data: insertedRows, error: insertError } = await supabase
+  const { data: newRow, error: insertError } = await supabase
     .from('events')
     .insert({
       idempotency_key: idempotencyKey,
       payload: parsedPayload,
       status: 'Received',
     })
-    .select(); // WHAT: Ask Supabase to return the row it just inserted.
-               // WHY: We need the auto-generated "id" to send back to the caller.
+    .select()
+    .single(); // WHAT: Ask Supabase to return the single inserted row object.
+               // WHY: We need the full row (id, created_at, status, attempt_count) to publish via SSE and reply to caller.
 
   // WHAT: Check if the insert succeeded.
   // WHY: If there is no error, we have a brand-new event — return it.
   if (!insertError) {
-    const newRow = insertedRows[0];
     console.log('Event inserted successfully. ID:', newRow.id);
-    return { success: true, id: newRow.id, status: newRow.status, duplicate: false };
+    return {
+      success: true,
+      id: newRow.id,
+      status: newRow.status,
+      row: newRow,
+      duplicate: false
+    };
   }
 
   // WHAT: Check if the error is a unique-constraint violation (code "23505").
@@ -97,15 +107,16 @@ async function saveEvent(idempotencyKey, parsedPayload) {
     // WHAT: Update the existing row — only refresh payload and updated_at.
     // WHY:  We intentionally do NOT reset status or attempt_count. The event
     //       was already processed; we are just acknowledging the re-delivery.
-    const { data: updatedRows, error: updateError } = await supabase
+    const { data: updatedRow, error: updateError } = await supabase
       .from('events')
       .update({
         payload: parsedPayload,
         updated_at: new Date().toISOString(),
       })
       .eq('idempotency_key', idempotencyKey)
-      .select(); // WHAT: Return the updated row so we can read its id.
-                 // WHY: We need the existing id to include in our 200 response.
+      .select()
+      .single(); // WHAT: Return the single updated row object.
+                 // WHY: We need the updated row to publish via SSE and read its id.
 
     // WHAT: If even the update fails, report it.
     // WHY: This is an edge case (e.g. row deleted between insert and update),
@@ -115,9 +126,14 @@ async function saveEvent(idempotencyKey, parsedPayload) {
       return { success: false, errorCode: 'UPDATE_FAILED' };
     }
 
-    const existingRow = updatedRows[0];
-    console.log('Duplicate event row updated. Existing ID:', existingRow.id);
-    return { success: true, id: existingRow.id, status: existingRow.status, duplicate: true };
+    console.log('Duplicate event row updated. Existing ID:', updatedRow.id);
+    return {
+      success: true,
+      id: updatedRow.id,
+      status: updatedRow.status,
+      row: updatedRow,
+      duplicate: true
+    };
   }
 
   // WHAT: Any other database error we did not anticipate.
@@ -211,12 +227,30 @@ async function handleWebhook(req, res) {
   // WHY:  201 = new event created. 200 = duplicate acknowledged. The "duplicate"
   //       flag lets the caller know which case occurred without guessing.
   if (result.duplicate) {
+    // WHAT: Publish the updated row to all connected SSE clients.
+    // WHY: Keeps all live dashboard displays updated when a duplicate delivery occurs.
+    try {
+      console.log('Publishing duplicate event update via SSE for ID:', result.id);
+      publishEvent(result.row);
+    } catch (publishErr) {
+      console.error('Error publishing duplicate event via SSE:', publishErr.message);
+    }
+
     console.log('Responding 200 — duplicate event acknowledged.');
     return res.status(200).json({
       id: result.id,
       status: result.status,
       duplicate: true,
     });
+  }
+
+  // WHAT: Publish the new event to all connected SSE clients right after insert and BEFORE runPipeline.
+  // WHY: Immediately shows the event in "Received" state on all live dashboards.
+  try {
+    console.log('Publishing new event via SSE for ID:', result.id);
+    publishEvent(result.row);
+  } catch (publishErr) {
+    console.error('Error publishing new event via SSE:', publishErr.message);
   }
 
   console.log('Responding 201 — new event saved.');

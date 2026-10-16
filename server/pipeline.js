@@ -2,6 +2,10 @@
 // WHY: The pipeline needs database access to load the event payload and update its status.
 const { supabase } = require('./supabase');
 
+// WHAT: Import publishEvent from sse.js.
+// WHY: Broadcasts the final processing status (Completed or Failed) to connected SSE dashboards.
+const { publishEvent } = require('./sse');
+
 // WHAT: Main pipeline function that processes an event after it has been received.
 // WHY: EventBridge stores incoming webhooks first, then runs this pipeline in the background.
 // This decouples receiving webhooks from delivering them to downstream consumers.
@@ -99,7 +103,7 @@ async function runPipeline(eventId) {
     const newAttemptCount = (eventRow.attempt_count || 0) + 1;
     const nowIsoString = new Date().toISOString();
 
-    const { error: updateError } = await supabase
+    const { data: updatedRow, error: updateError } = await supabase
       .from('events')
       .update({
         status: newStatus,
@@ -107,7 +111,9 @@ async function runPipeline(eventId) {
         attempt_count: newAttemptCount,
         updated_at: nowIsoString
       })
-      .eq('id', eventId);
+      .eq('id', eventId)
+      .select()
+      .single();
 
     if (updateError) {
       console.error(
@@ -122,6 +128,16 @@ async function runPipeline(eventId) {
       'Final Status:', newStatus,
       'Attempts:', newAttemptCount
     );
+
+    // WHAT: Broadcast the updated event row to all connected SSE clients.
+    // WHY: Keeps the dashboard live in real time as events complete or fail.
+    // RULE: "Never throws" rule: any publishing error must be caught and only logged.
+    try {
+      console.log('Pipeline Step 4: Publishing final status via SSE for Event ID:', eventId);
+      publishEvent(updatedRow);
+    } catch (publishErr) {
+      console.error('Error publishing event update in pipeline:', publishErr.message);
+    }
 
   } catch (unexpectedError) {
     // WHAT: Global safety net around the entire function.

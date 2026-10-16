@@ -132,6 +132,7 @@ app.listen(PORT, () => {
   console.log('Mock mode route: http://localhost:' + PORT + '/api/mock-downstream/mode');
   console.log('Login route:     http://localhost:' + PORT + '/api/login');
   console.log('Events route:    http://localhost:' + PORT + '/api/events');
+  console.log('SSE Stream:      http://localhost:' + PORT + '/api/stream');
   console.log('====================================================');
 
   // WHAT: Test the Supabase connection once when the server starts.

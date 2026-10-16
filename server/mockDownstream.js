@@ -12,8 +12,17 @@ let isHealthy = true;
 // WHY: This acts as the destination API that our EventBridge pipeline forwards events to.
 // If isHealthy is true, it simulates a successful external receiver (200 OK).
 // If isHealthy is false, it simulates a third-party downtime or outage (503 Service Unavailable).
-function handleMockDownstream(req, res) {
+async function handleMockDownstream(req, res) {
   console.log('--- Incoming POST /api/mock-downstream ---');
+
+  // WHAT: Read the artificial delay in milliseconds from environment variables (default 0).
+  // WHY: Adding a delay allows testers to observe an event sitting in the "Received" state
+  // before transitioning to "Completed" or "Failed" live on the dashboard.
+  const delayMs = parseInt(process.env.DOWNSTREAM_DELAY_MS || '0', 10);
+  if (delayMs > 0) {
+    console.log('Mock downstream: waiting ' + delayMs + 'ms before replying...');
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
 
   // WHAT: Check our health flag.
   // WHY: Decide whether to succeed or fail based on current mock mode.

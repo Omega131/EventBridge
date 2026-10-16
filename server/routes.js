@@ -17,6 +17,57 @@ const { checkPassword, createToken, requireLogin } = require('./auth');
 // WHY: We need database access to read event rows.
 const { supabase } = require('./supabase');
 
+// WHAT: Import SSE client management functions from sse.js.
+// WHY: The GET /api/stream route needs to register incoming browser connections
+// and unregister them when the connection is closed.
+const { addClient, removeClient } = require('./sse');
+
+
+// ─── ROUTE: GET /api/stream (PUBLIC SSE STREAM) ───────────────────────────
+// WHAT: Provide a Server-Sent Events (SSE) stream for real-time dashboard updates.
+// WHY:  Allows any visitor (public, no login required) to receive live updates
+//       whenever an event is received, completed, or failed.
+router.get('/stream', (req, res) => {
+  console.log('--- Incoming GET /api/stream (SSE connection) ---');
+
+  // WHAT: Set mandatory HTTP headers for Server-Sent Events.
+  // WHY:
+  //   - Content-Type: "text/event-stream" tells the client (browser) to keep the connection
+  //     open and parse incoming text as an event stream instead of a normal web page.
+  //   - Cache-Control: "no-cache" prevents intermediate proxies or browsers from caching SSE events.
+  //   - Connection: "keep-alive" ensures the TCP connection stays open persistently.
+  //   - X-Accel-Buffering: "no" disables response buffering in reverse proxies like Nginx,
+  //     ensuring events are sent to the client immediately without being held in a buffer.
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+
+  // WHAT: Send response headers to the client immediately.
+  // WHY: Express normally waits until the response ends before sending headers.
+  // Since an SSE stream never ends, we must explicitly call res.flushHeaders() to send HTTP 200 OK now.
+  res.flushHeaders();
+
+  // WHAT: Send an initial SSE comment to confirm the connection is active.
+  // WHY: The browser's EventSource object receives confirmation immediately.
+  res.write(': connected\n\n');
+
+  // WHAT: Register this client's response object in our list of active listeners.
+  // WHY: Enables sse.js to push future event-update messages to this connection.
+  addClient(res);
+
+  // WHAT: Listen for the HTTP request "close" event.
+  // WHY: When a user closes the tab, navigates away, or loses internet connection,
+  // the client socket emits "close". We clean up by removing the client from our array.
+  req.on('close', () => {
+    console.log('Client closed SSE connection on GET /api/stream.');
+    removeClient(res);
+  });
+
+  // IMPORTANT: We NEVER call res.end() here!
+  // An SSE connection must stay open indefinitely to allow the server to push new events over time.
+});
+
 
 // ─── ROUTE 1: POST /api/login ──────────────────────────────────────────────
 // WHAT: Verify admin password and issue a signed session cookie.
