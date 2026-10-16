@@ -8,19 +8,36 @@ const router = express.Router();
 // WHY: Used in the /api/me endpoint to quickly check whether the session token is valid.
 const jwt = require('jsonwebtoken');
 
-// WHAT: Import our authentication helpers from auth.js.
+// WHAT: Import our authentication helpers and rate limiting functions from auth.js.
 // WHY: We need checkPassword to verify login credentials, createToken to make JWTs,
-// and requireLogin middleware to protect admin-only routes.
-const { checkPassword, createToken, requireLogin } = require('./auth');
+// requireLogin middleware to protect admin-only routes, isTokenValid to verify token versions,
+// and rate-limiting helpers to guard against brute-force login attacks.
+const {
+  checkPassword,
+  createToken,
+  requireLogin,
+  isTokenValid,
+  isLoginRateLimited,
+  recordFailedLogin,
+  clearFailedLogins
+} = require('./auth');
+
+// WHAT: Import getSetting and setSetting from settings.js.
+// WHY: Used to read and update persistent settings such as mock_healthy and auth_version.
+const { getSetting, setSetting } = require('./settings');
+
+// WHAT: Import setMockHealthy from mockDownstream.js.
+// WHY: Used by the admin POST /api/mock/mode endpoint to toggle the mock downstream service.
+const { setMockHealthy } = require('./mockDownstream');
 
 // WHAT: Import our Supabase database client from supabase.js.
-// WHY: We need database access to read event rows.
+// WHY: We need database access to read and manage event rows.
 const { supabase } = require('./supabase');
 
-// WHAT: Import SSE client management functions from sse.js.
+// WHAT: Import SSE client management and broadcast functions from sse.js.
 // WHY: The GET /api/stream route needs to register incoming browser connections,
-// and the retry route needs publishEvent to broadcast status changes.
-const { addClient, removeClient, publishEvent } = require('./sse');
+// and admin actions broadcast events to update all connected dashboards in real time.
+const { addClient, removeClient, broadcast, publishEvent } = require('./sse');
 
 // WHAT: Import runPipeline from pipeline.js.
 // WHY: Once an event is claimed for retry, we run it through the delivery pipeline again.
@@ -76,8 +93,18 @@ router.get('/stream', (req, res) => {
 // ─── ROUTE 1: POST /api/login ──────────────────────────────────────────────
 // WHAT: Verify admin password and issue a signed session cookie.
 // WHY:  Allows administrators to sign in and view full event payloads and retry failures.
-router.post('/login', (req, res) => {
-  console.log('--- Incoming POST /api/login ---');
+// Protected by IP-based rate limiting (5 attempts per 15 minutes) to block brute-force attacks.
+router.post('/login', async (req, res) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  console.log('--- Incoming POST /api/login from IP: ' + clientIp + ' ---');
+
+  // WHAT: Check rate limiting BEFORE checking the password.
+  // WHY: If this IP has count >= 5 failed attempts inside the 15-minute window,
+  // reply 429 {"error":"Too many attempts. Try again later."} and log it.
+  if (isLoginRateLimited(clientIp)) {
+    console.warn('Rate limit exceeded: Blocking login attempt from IP:', clientIp);
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  }
 
   // WHAT: Read the password from the JSON body.
   // WHY: The client sends {"password": "..."}.
@@ -97,31 +124,45 @@ router.post('/login', (req, res) => {
   // WHY: Validates against ADMIN_PASSWORD without risking timing attacks.
   const isValid = checkPassword(password);
   if (!isValid) {
+    // Record failed login attempt for this IP
+    recordFailedLogin(clientIp);
     // IMPORTANT: We log that a failed login happened, but NEVER log the password string itself.
     console.log('Login attempt failed: incorrect password.');
     return res.status(401).json({ error: 'Wrong password' });
   }
 
-  // WHAT: Create a signed JWT token valid for 12 hours.
-  // WHY: Encapsulates the admin role securely in a signed token.
-  const token = createToken();
+  // WHAT: On a correct password, delete the IP's entry from the rate limit tracker.
+  // WHY: Legitimate administrator provided valid credentials; reset counter.
+  clearFailedLogins(clientIp);
 
-  // WHAT: Set the "eventbridge_token" cookie on the response.
-  // WHY:
-  //   - httpOnly: true prevents client-side JavaScript (XSS) from reading the token.
-  //   - sameSite: "strict" prevents the browser from sending the cookie on cross-site requests (CSRF protection).
-  //   - secure: true only in production (HTTPS), false in local development (HTTP).
-  //   - maxAge: 12 hours in milliseconds (12 * 60 * 60 * 1000 = 43,200,000 ms).
-  const twelveHoursInMs = 12 * 60 * 60 * 1000;
-  res.cookie('eventbridge_token', token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: twelveHoursInMs
-  });
+  try {
+    // WHAT: Create a signed JWT token embedding the current database auth_version.
+    // WHY: Reading auth_version allows future global revocations ("Sign out everywhere").
+    const token = await createToken();
 
-  console.log('Admin login successful. Session cookie set.');
-  return res.status(200).json({ loggedIn: true });
+    // WHAT: Set the "eventbridge_token" cookie on the response.
+    // WHY:
+    //   - httpOnly: true prevents client-side JavaScript (XSS) from reading the token.
+    //   - sameSite: "strict" prevents the browser from sending the cookie on cross-site requests (CSRF protection).
+    //   - secure: true only in production (HTTPS), false in local development (HTTP).
+    //   - maxAge: 12 hours in milliseconds (12 * 60 * 60 * 1000 = 43,200,000 ms).
+    const twelveHoursInMs = 12 * 60 * 60 * 1000;
+    res.cookie('eventbridge_token', token, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: twelveHoursInMs
+    });
+
+    console.log('Admin login successful. Session cookie set.');
+    return res.status(200).json({ loggedIn: true });
+  } catch (err) {
+    console.error('Login error while generating session token:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not complete login.'
+    });
+  }
 });
 
 
@@ -148,8 +189,9 @@ router.post('/logout', (req, res) => {
 // WHAT: Check whether the current visitor is signed in as admin.
 // WHY:  The frontend calls this when the page loads to decide whether to display
 //       the admin view (payloads, retry buttons) or the public view.
-//       This route MUST ALWAYS return HTTP 200 (never 401), so it does NOT use requireLogin.
-router.get('/me', (req, res) => {
+//       This route uses the exact same isTokenValid check as requireLogin so they can never disagree.
+//       If the database read fails, deny the request with 500 and log it (fail closed).
+router.get('/me', async (req, res) => {
   // Read the cookie if present
   const token = req.cookies ? req.cookies.eventbridge_token : undefined;
 
@@ -157,14 +199,22 @@ router.get('/me', (req, res) => {
     return res.status(200).json({ loggedIn: false });
   }
 
-  // WHAT: Verify the token signature.
-  // WHY: Confirms the cookie hasn't expired or been forged.
+  // WHAT: Verify the token signature and database auth_version using isTokenValid.
+  // WHY: Guarantees requireLogin and GET /api/me stay completely synchronized.
   try {
-    jwt.verify(token, process.env.SESSION_SECRET);
-    return res.status(200).json({ loggedIn: true });
-  } catch (err) {
-    // If expired or invalid, treat as logged out
-    return res.status(200).json({ loggedIn: false });
+    const valid = await isTokenValid(token);
+    if (valid) {
+      return res.status(200).json({ loggedIn: true });
+    } else {
+      return res.status(200).json({ loggedIn: false });
+    }
+  } catch (dbErr) {
+    // FAIL CLOSED: If checking the database fails, reply 500
+    console.error('GET /api/me error: Database read failed while verifying token (failing closed):', dbErr.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Authentication service temporarily unavailable'
+    });
   }
 });
 
@@ -177,12 +227,12 @@ router.get('/events', async (req, res) => {
   console.log('--- Incoming GET /api/events (public) ---');
 
   try {
-    // WHAT: Select ONLY id, created_at, status, attempt_count.
+    // WHAT: Select ONLY id, created_at, updated_at, status, attempt_count.
     // WHY: Rule: Never expose payload or failure_reason to public visitors.
     // Order by created_at DESC (newest first), with id DESC as tie-breaker. Limit 100.
     const { data: events, error } = await supabase
       .from('events')
-      .select('id, created_at, status, attempt_count')
+      .select('id, created_at, updated_at, status, attempt_count')
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .limit(100);
@@ -412,6 +462,179 @@ router.post('/events/:id/retry', requireLogin, async (req, res) => {
     });
   }
 });
+
+
+// ─── ROUTE 7: GET /api/mock/status (PUBLIC) ────────────────────────────────
+// WHAT: Return the current health status of the mock downstream service.
+// WHY:  Allows frontend dashboards and external monitors to check whether the mock
+//       service is currently healthy (200 OK) or simulating an outage (503 Error).
+router.get('/mock/status', async (req, res) => {
+  console.log('--- Incoming GET /api/mock/status ---');
+
+  try {
+    // WHAT: Read the "mock_healthy" setting from the database settings table.
+    // WHY: Value is stored as "true" or "false" string; convert to boolean.
+    const settingValue = await getSetting('mock_healthy');
+    const isHealthy = settingValue === 'true';
+
+    console.log('Current mock downstream health status:', isHealthy);
+    return res.status(200).json({ healthy: isHealthy });
+  } catch (err) {
+    console.error('Failed to read mock_healthy setting from database:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not fetch mock downstream status.'
+    });
+  }
+});
+
+
+// ─── ROUTE 8: POST /api/mock/mode (ADMIN ONLY) ─────────────────────────────
+// WHAT: Toggle the mock downstream service health setting.
+// WHY:  Allows signed-in administrators to switch mock downstream between healthy and broken.
+// Protected by requireLogin middleware.
+router.post('/mock/mode', requireLogin, async (req, res) => {
+  console.log('--- Incoming POST /api/mock/mode (admin) ---');
+
+  // WHAT: Validate that the incoming body contains a boolean "healthy" field.
+  // WHY: The requirement specifies: body must be {"healthy": boolean}, anything else is 400.
+  const requestedHealth = req.body ? req.body.healthy : undefined;
+  if (typeof requestedHealth !== 'boolean') {
+    console.log('Rejected invalid mock mode request: "healthy" must be a boolean (true or false).');
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Body must be JSON with a boolean "healthy" field, e.g. {"healthy": false}.'
+    });
+  }
+
+  try {
+    // WHAT: Persist the new health mode to the database settings table.
+    // WHY: Survives restarts and keeps worker instances in sync.
+    await setMockHealthy(requestedHealth);
+    console.log('Mock downstream mode updated to:', requestedHealth);
+
+    // WHAT: Broadcast "mock-status" over SSE to all open browser windows.
+    // WHY: Open dashboards immediately update their mock status indicator.
+    try {
+      broadcast('mock-status', { healthy: requestedHealth });
+    } catch (broadcastErr) {
+      console.error('Error broadcasting mock-status over SSE:', broadcastErr.message);
+    }
+
+    // WHAT: Reply with the updated health status.
+    return res.status(200).json({ healthy: requestedHealth });
+  } catch (err) {
+    console.error('Failed to update mock downstream mode:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not update mock health setting.'
+    });
+  }
+});
+
+
+// ─── ROUTE 9: POST /api/admin/clear-events (ADMIN ONLY) ────────────────────
+// WHAT: Delete every event in the events table and notify all connected clients.
+// WHY:  Provides an administrative reset mechanism for cleaning up test runs and demos.
+// Protected by requireLogin middleware.
+router.post('/admin/clear-events', requireLogin, async (req, res) => {
+  console.log('--- Incoming POST /api/admin/clear-events (admin) ---');
+
+  // WHAT: Verify explicit confirmation in request body.
+  // WHY: Guard against accidental clicks; body must be exactly {"confirm": "DELETE ALL"}.
+  const confirm = req.body ? req.body.confirm : undefined;
+  if (confirm !== 'DELETE ALL') {
+    console.log('Clear events rejected: missing or invalid confirmation string.');
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'Body must be exactly {"confirm": "DELETE ALL"}'
+    });
+  }
+
+  try {
+    // WHAT: Delete every row in the events table in a single Supabase delete call.
+    // WHY: Supabase requires a filter on delete, so we match all IDs that are not the nil UUID
+    // and request count: "exact" so we know exactly how many rows were removed.
+    console.log('Executing database delete on all events table rows...');
+    const { count, error } = await supabase
+      .from('events')
+      .delete({ count: 'exact' })
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (error) {
+      console.error('Database error in clear-events:', error.message);
+      return res.status(500).json({
+        error: 'Internal Server Error',
+        message: 'Could not clear events table.'
+      });
+    }
+
+    const deletedCount = count !== null ? count : 0;
+    // CRITICAL SECURITY RULE: Log the number only, NEVER log any payload or sensitive data.
+    console.log('Admin clear-events completed. Total rows deleted:', deletedCount);
+
+    // WHAT: Broadcast "events-cleared" over SSE to all connected clients.
+    // WHY: All open dashboards immediately clear their in-memory event lists.
+    try {
+      broadcast('events-cleared', {});
+    } catch (broadcastErr) {
+      console.error('Error broadcasting events-cleared over SSE:', broadcastErr.message);
+    }
+
+    // WHAT: Reply with the count of deleted events.
+    return res.status(200).json({ deleted: deletedCount });
+  } catch (err) {
+    console.error('Unexpected error in clear-events:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not clear events table.'
+    });
+  }
+});
+
+
+// ─── ROUTE 10: POST /api/admin/sign-out-everywhere (ADMIN ONLY) ────────────
+// WHAT: Invalidate all existing admin session tokens across all browsers and devices.
+// WHY:  JWTs are stateless by default and cannot be revoked without a centralized check.
+// By incrementing the "auth_version" integer in the database settings table, every
+// previously issued token (which carries the older version number in its payload)
+// will fail validation on its next request in isTokenValid(). This instantly signs out
+// all active sessions everywhere without needing a token blocklist.
+// Protected by requireLogin middleware.
+router.post('/admin/sign-out-everywhere', requireLogin, async (req, res) => {
+  console.log('--- Incoming POST /api/admin/sign-out-everywhere (admin) ---');
+
+  try {
+    // WHAT: Read current auth_version from the database settings table.
+    const currentVersionStr = await getSetting('auth_version');
+    const currentVersion = parseInt(currentVersionStr, 10);
+    const newVersion = currentVersion + 1;
+
+    console.log('Incrementing auth_version in database from ' + currentVersion + ' to ' + newVersion + '...');
+
+    // WHAT: Save incremented auth_version to the database.
+    // WHY: This invalidates all currently outstanding tokens across all devices simultaneously.
+    await setSetting('auth_version', String(newVersion));
+
+    // WHAT: Clear the session cookie for the current caller.
+    // WHY: Clears the local browser's cookie immediately.
+    res.clearCookie('eventbridge_token', {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production'
+    });
+
+    console.log('Sign out everywhere complete: auth_version is now ' + newVersion + '. Session cookie cleared.');
+    return res.status(200).json({ loggedIn: false });
+  } catch (err) {
+    console.error('Error during sign-out-everywhere:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not process sign out everywhere.'
+    });
+  }
+});
+
 
 // WHAT: Export the router so index.js can mount it.
 module.exports = router;

@@ -66,19 +66,20 @@ setInterval(() => {
 }, 25000);
 
 // WHAT: Whitelist and publish public event fields over SSE.
-// WHY: CRITICAL SECURITY RULE: Public dashboards must ONLY receive id, created_at, status,
-// and attempt_count. We must NEVER publish payload or failure_reason to public streams.
+// WHY: CRITICAL SECURITY RULE: Public dashboards must ONLY receive id, created_at, updated_at,
+// status, and attempt_count. We must NEVER publish payload or failure_reason to public streams.
 function publishEvent(row) {
   if (!row) {
     console.log('publishEvent called with empty row. Skipping.');
     return;
   }
 
-  // WHAT: Build an object with strictly ONLY the 4 permitted public fields.
+  // WHAT: Build an object with strictly ONLY the 5 permitted public fields.
   // WHY: Prevents sensitive payload data or private failure details from reaching public listeners.
   const publicSummary = {
     id: row.id,
     created_at: row.created_at,
+    updated_at: row.updated_at,
     status: row.status,
     attempt_count: row.attempt_count
   };

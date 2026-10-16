@@ -33,6 +33,10 @@ const {
 // WHY: Keeping route handlers in routes.js keeps index.js clean and focused on server configuration.
 const apiRoutes = require('./routes');
 
+// WHAT: Import startSweeper from sweeper.js.
+// WHY: Background sweeper that periodically detects and fails abandoned in-flight events.
+const { startSweeper } = require('./sweeper');
+
 
 // ─── STARTUP GUARDS: REQUIRED SECRETS ─────────────────────────────────────
 
@@ -74,6 +78,12 @@ if (!process.env.SESSION_SECRET) {
 
 // WHAT: Create an instance of an Express application.
 const app = express();
+
+// WHAT: Configure Express to trust the reverse proxy (Render, Heroku, Cloudflare, etc.).
+// WHY: Behind Render's reverse proxy, req.ip would otherwise be the proxy server's internal address,
+// causing every user on the internet to share the same rate-limiting counter. Setting "trust proxy"
+// to 1 tells Express to trust the first hop and read the client's true IP from the X-Forwarded-For header.
+app.set('trust proxy', 1);
 
 // WHAT: Enable cookie parsing across all routes.
 // WHY: Cookie parsing only reads the "Cookie" HTTP header string into req.cookies.
@@ -138,4 +148,9 @@ app.listen(PORT, () => {
   // WHAT: Test the Supabase connection once when the server starts.
   // WHY: Immediately tells the developer whether the database configuration is working.
   testSupabaseConnection();
+
+  // WHAT: Start the background event sweeper.
+  // WHY: Immediately checks for any events abandoned in "Received" state before this startup,
+  // and schedules ongoing checks every 30 seconds.
+  startSweeper();
 });

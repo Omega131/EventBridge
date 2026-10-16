@@ -52,6 +52,8 @@ npm run dev
 | POST | `/api/webhook` | Receive, store, and trigger event pipeline | Yes (`x-webhook-secret`) |
 | POST | `/api/mock-downstream` | Mock destination service (200 OK or 503 error) | No |
 | POST | `/api/mock-downstream/mode` | Toggle mock service health (`{"healthy": true\|false}`) | Yes (`x-webhook-secret`) |
+| GET | `/api/mock/status` | Read mock service health status (`{"healthy": true\|false}`) | No |
+| POST | `/api/mock/mode` | Toggle mock service health (`{"healthy": true\|false}`) | Yes (Admin cookie) |
 | POST | `/api/login` | Sign in as admin, sets session cookie | No (password check) |
 | POST | `/api/logout` | Sign out, clears session cookie | No |
 | GET | `/api/me` | Check admin authentication status | No |
@@ -59,6 +61,8 @@ npm run dev
 | GET | `/api/events/:id` | Full event details (payload & failure reason) | Yes (Admin cookie) |
 | GET | `/api/stream` | Server-Sent Events (SSE) live updates stream | No |
 | POST | `/api/events/:id/retry` | Atomically claim and retry a failed event | Yes (Admin cookie) |
+| POST | `/api/admin/clear-events` | Delete all events (`{"confirm": "DELETE ALL"}`) | Yes (Admin cookie) |
+| POST | `/api/admin/sign-out-everywhere` | Invalidate all active admin tokens globally | Yes (Admin cookie) |
 
 ## How to Send a Webhook
 
@@ -212,3 +216,43 @@ curl -b cookies.txt -i -X POST http://localhost:3000/api/events/YOUR_EVENT_ID/re
   "message": "Event not found."
 }
 ```
+
+## Admin Features
+
+EventBridge provides server-side admin management features protected by authentication and synchronized live via Server-Sent Events (SSE).
+
+### 1. Mock Downstream Control
+Administrators can check mock status or toggle the mock service directly through authenticated API endpoints:
+- **`GET /api/mock/status` (Public):**
+  ```bash
+  curl http://localhost:3000/api/mock/status
+  # Returns: {"healthy": true}
+  ```
+- **`POST /api/mock/mode` (Admin cookie):**
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:3000/api/mock/mode \
+    -H "Content-Type: application/json" \
+    -d '{"healthy": false}'
+  # Broadcasts "mock-status" over SSE and returns: {"healthy": false}
+  ```
+
+### 2. Clear Database
+Reset the dashboard by deleting all rows from the `events` table:
+- **`POST /api/admin/clear-events` (Admin cookie):**
+  Requires strict confirmation:
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:3000/api/admin/clear-events \
+    -H "Content-Type: application/json" \
+    -d '{"confirm": "DELETE ALL"}'
+  # Broadcasts "events-cleared" over SSE and returns: {"deleted": 15}
+  ```
+
+### 3. Sign Out Everywhere (Global Token Revocation)
+Even though JWT session tokens are stateless, EventBridge supports instant global token invalidation across all devices and browsers:
+- **`POST /api/admin/sign-out-everywhere` (Admin cookie):**
+  ```bash
+  curl -b cookies.txt -X POST http://localhost:3000/api/admin/sign-out-everywhere
+  # Returns: {"loggedIn": false}
+  ```
+  This increments the global `auth_version` stored in the database. Any token created prior to this call carries an older version number and will be immediately rejected on its next request.
+

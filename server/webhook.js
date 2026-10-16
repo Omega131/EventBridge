@@ -80,6 +80,7 @@ async function saveEvent(idempotencyKey, parsedPayload) {
       idempotency_key: idempotencyKey,
       payload: parsedPayload,
       status: 'Received',
+      updated_at: new Date().toISOString()
     })
     .select()
     .single(); // WHAT: Ask Supabase to return the single inserted row object.

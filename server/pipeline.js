@@ -31,10 +31,7 @@ async function runPipeline(eventId) {
       .single();
 
     if (fetchError || !eventRow) {
-      console.error(
-        'Pipeline Step 1 failed: Could not find event in database.',
-        fetchError ? fetchError.message : 'No row returned.'
-      );
+      console.log('Pipeline: event no longer exists for ID:', eventId, 'Stopping pipeline.');
       return;
     }
 
@@ -103,7 +100,7 @@ async function runPipeline(eventId) {
     const newAttemptCount = (eventRow.attempt_count || 0) + 1;
     const nowIsoString = new Date().toISOString();
 
-    const { data: updatedRow, error: updateError } = await supabase
+    const { data: updatedRows, error: updateError } = await supabase
       .from('events')
       .update({
         status: newStatus,
@@ -112,8 +109,7 @@ async function runPipeline(eventId) {
         updated_at: nowIsoString
       })
       .eq('id', eventId)
-      .select()
-      .single();
+      .select();
 
     if (updateError) {
       console.error(
@@ -122,6 +118,15 @@ async function runPipeline(eventId) {
       );
       return;
     }
+
+    // WHAT: Check if the row was deleted while downstream was running.
+    // WHY: Rule: If the row was deleted (e.g. by clear-events), log "event no longer exists" and stop with no publish and no throw.
+    if (!updatedRows || updatedRows.length === 0) {
+      console.log('Pipeline: event no longer exists. Event ID ' + eventId + ' was deleted during processing. Stopping.');
+      return;
+    }
+
+    const updatedRow = updatedRows[0];
 
     console.log(
       '=== Pipeline Finished for Event ' + eventId + ' ===',

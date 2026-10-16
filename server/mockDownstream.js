@@ -3,15 +3,30 @@
 // like toggling the mock downstream mode.
 const { checkSecret } = require('./auth');
 
-// WHAT: An in-memory variable tracking whether our pretend external service is healthy.
-// WHY: In real life, third-party services occasionally go down. This flag lets us
-// simulate outages on demand to prove our retry and failure pipeline works during demos.
-let isHealthy = true;
+// WHAT: Import getSetting and setSetting from settings.js.
+// WHY: In Phase 6.5a, we stop using the in-memory isHealthy variable. Storing the mock downstream
+// mode in the Supabase "settings" table ensures the health setting survives server restarts
+// and remains consistent across multiple server instances or worker processes.
+const { getSetting, setSetting } = require('./settings');
+
+// WHAT: Import broadcast from sse.js.
+// WHY: When the mock mode is toggled, we broadcast "mock-status" to all open browser dashboards.
+const { broadcast } = require('./sse');
+
+// WHAT: Helper function to persist mock downstream health in the database.
+// WHY: Exported so other backend modules or tests can toggle mock health programmatically.
+async function setMockHealthy(boolean) {
+  const valueString = boolean ? 'true' : 'false';
+  console.log('setMockHealthy called with:', boolean, '-> saving "' + valueString + '" to database...');
+  await setSetting('mock_healthy', valueString);
+  return boolean;
+}
 
 // WHAT: Route handler for POST /api/mock-downstream.
 // WHY: This acts as the destination API that our EventBridge pipeline forwards events to.
-// If isHealthy is true, it simulates a successful external receiver (200 OK).
-// If isHealthy is false, it simulates a third-party downtime or outage (503 Service Unavailable).
+// Reads the current mock_healthy setting from the database on every request.
+// If mock_healthy is "true", it simulates a healthy downstream service (200 OK).
+// If mock_healthy is "false", it simulates a service outage (503 Service Unavailable).
 async function handleMockDownstream(req, res) {
   console.log('--- Incoming POST /api/mock-downstream ---');
 
@@ -24,13 +39,23 @@ async function handleMockDownstream(req, res) {
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  // WHAT: Check our health flag.
-  // WHY: Decide whether to succeed or fail based on current mock mode.
+  // WHAT: Read the "mock_healthy" flag from the database settings table.
+  // WHY: Rule: If reading fails, log it and reply 503 {"ok":false}.
+  let isHealthy = false;
+  try {
+    const settingValue = await getSetting('mock_healthy');
+    isHealthy = settingValue === 'true';
+  } catch (readError) {
+    console.error('Mock downstream failed to read mock_healthy setting from database:', readError.message);
+    return res.status(503).json({ ok: false });
+  }
+
+  // WHAT: Decide whether to succeed or fail based on current mock mode.
   if (isHealthy) {
-    console.log('Mock downstream status: HEALTHY. Responding 200 OK.');
+    console.log('Mock downstream status: HEALTHY (from database). Responding 200 OK.');
     return res.status(200).json({ ok: true });
   } else {
-    console.log('Mock downstream status: UNHEALTHY. Responding 503 Service Unavailable.');
+    console.log('Mock downstream status: UNHEALTHY (from database). Responding 503 Service Unavailable.');
     return res.status(503).json({
       ok: false,
       error: 'Service unavailable'
@@ -41,11 +66,11 @@ async function handleMockDownstream(req, res) {
 // WHAT: Route handler for POST /api/mock-downstream/mode.
 // WHY: This is the administrative toggle switch. A tester or presenter can POST
 // {"healthy": false} or {"healthy": true} to change how the mock downstream behaves.
-function handleMockDownstreamMode(req, res) {
+async function handleMockDownstreamMode(req, res) {
   console.log('--- Incoming POST /api/mock-downstream/mode ---');
 
   // WHAT: Protect this endpoint with our webhook secret.
-  // WHY: Only authorized users should be able to flip our mock service between healthy and broken.
+  // WHY: Only authorized callers should be able to flip our mock service between healthy and broken.
   const isAuthorized = checkSecret(req);
   if (!isAuthorized) {
     console.log('Rejected unauthorized mock downstream mode change request.');
@@ -67,21 +92,38 @@ function handleMockDownstreamMode(req, res) {
     });
   }
 
-  // WHAT: Update our in-memory flag.
-  // WHY: Future calls to /api/mock-downstream will now use this new health state.
-  isHealthy = requestedHealth;
-  console.log('Mock downstream health mode updated. Current isHealthy:', isHealthy);
+  // WHAT: Update the mock_healthy setting in the database settings table.
+  // WHY: Future calls to /api/mock-downstream across any process will use this new setting.
+  try {
+    await setMockHealthy(requestedHealth);
+    console.log('Mock downstream health mode updated in database. Current isHealthy:', requestedHealth);
 
-  // WHAT: Reply with the new state.
-  // WHY: Confirms to the tester that the mode switch took effect.
-  return res.status(200).json({
-    healthy: isHealthy
-  });
+    // WHAT: Broadcast mock-status over SSE to all open browser windows.
+    // WHY: Rule: "Also make the EXISTING secret-protected route POST /api/mock-downstream/mode broadcast 'mock-status' the same way, so changes made with curl show up in open browsers."
+    try {
+      broadcast('mock-status', { healthy: requestedHealth });
+    } catch (broadcastErr) {
+      console.error('Error broadcasting mock-status over SSE:', broadcastErr.message);
+    }
+
+    // WHAT: Reply with the new state.
+    // WHY: Confirms to the caller that the mode switch took effect.
+    return res.status(200).json({
+      healthy: requestedHealth
+    });
+  } catch (err) {
+    console.error('Failed to update mock downstream mode in database:', err.message);
+    return res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Could not update mock health setting.'
+    });
+  }
 }
 
-// WHAT: Export the handlers and the getter function.
-// WHY: index.js needs the handlers to mount them as Express routes.
+// WHAT: Export the handlers and the setMockHealthy function.
+// WHY: index.js needs the handlers to mount them as Express routes, and other modules can use setMockHealthy.
 module.exports = {
   handleMockDownstream,
-  handleMockDownstreamMode
+  handleMockDownstreamMode,
+  setMockHealthy
 };
