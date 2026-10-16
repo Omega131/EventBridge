@@ -86,9 +86,16 @@ function EventTable({ events, selectedEventId, onSelectEvent, isLoggedIn, recent
 
                 {/* Status Badge */}
                 <td className="event-status-cell">
-                  <span className={getStatusBadgeClass(event.status)}>
-                    {event.status}
-                  </span>
+                  <div className="status-cell-wrapper">
+                    <span className={getStatusBadgeClass(event.status)}>
+                      {event.status}
+                    </span>
+                    {/* WHAT: Show "Retrying..." label next to badge if status is Received and attempt_count >= 1. */}
+                    {/* WHY: Explains to viewers why a previously failed event flipped back to Received status. */}
+                    {event.status === 'Received' && (event.attempt_count || 0) >= 1 && (
+                      <span className="retrying-label">Retrying...</span>
+                    )}
+                  </div>
                 </td>
 
                 {/* Attempt Count */}

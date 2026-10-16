@@ -382,6 +382,88 @@
   align-items: flex-start;
 }
 
+.details-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-retry {
+  background-color: var(--badge-failed-text);
+  color: #ffffff;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.btn-retry:hover:not(:disabled) {
+  background-color: #b91c1c;
+}
+
+.btn-retry:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* Retry Feedback Banners */
+.retry-feedback {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: fadeIn 0.2s ease;
+}
+
+.retry-feedback-success {
+  background-color: var(--badge-completed-bg);
+  color: var(--badge-completed-text);
+  border: 1px solid rgba(22, 163, 74, 0.25);
+}
+
+.retry-feedback-warning {
+  background-color: #fef3c7;
+  color: #b45309;
+  border: 1px solid rgba(217, 119, 6, 0.25);
+}
+
+.retry-feedback-error {
+  background-color: var(--badge-failed-bg);
+  color: var(--badge-failed-text);
+  border: 1px solid rgba(220, 38, 38, 0.25);
+}
+
+@media (prefers-color-scheme: dark) {
+  .retry-feedback-warning {
+    background-color: #451a03;
+    color: #fde68a;
+    border-color: rgba(245, 158, 11, 0.3);
+  }
+}
+
+/* Status Cell Wrapper & Retrying Label */
+.status-cell-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.retrying-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #d97706;
+  font-style: italic;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .details-header h3 {
   font-size: 1.1rem;
   font-weight: 600;

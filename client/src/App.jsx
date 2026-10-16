@@ -460,6 +460,11 @@ function App() {
               isLoading={isLoadingDetails}
               errorMessage={detailsError}
               onClose={handleCloseDetails}
+              isLoggedIn={isLoggedIn}
+              onSignedOut={() => {
+                console.warn('App: Signed out due to 401 response from retry.');
+                setIsLoggedIn(false);
+              }}
             />
           </section>
         )}
