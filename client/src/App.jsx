@@ -23,7 +23,8 @@ import EventDetails from './components/EventDetails';
 import AdminPanel from './components/AdminPanel';
 import WebhookDispatcher from './components/WebhookDispatcher';
 import { sound } from './utils/sound';
-import logoImg from './assets/logo.png';
+import logoLight from './assets/logo-symbol-light.png';
+import logoDark from './assets/logo-symbol-dark.png';
 import './App.css';
 
 // ─── STALE-UPDATE GUARD HELPER ───────────────────────────────────────────────
@@ -461,10 +462,14 @@ export default function App() {
       {/* ─── 1. ULTRA-PREMIUM HEADER ─── */}
       <header className="dashboard-header">
         <div className="header-left">
-          {/* Logo with pulsating neon core */}
+          {/* Brand symbol with theme awareness and live status indicator */}
           <div className="brand-logo-wrap" title="EventBridge Platform">
             <div className="brand-logo-outer">
-              <img src={logoImg} alt="EventBridge Logo" className="brand-logo-img" />
+              <img
+                src={theme === 'dark' ? logoDark : logoLight}
+                alt="EventBridge Symbol"
+                className="brand-logo-img"
+              />
             </div>
             <span className="brand-pulse-dot" />
           </div>
