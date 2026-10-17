@@ -23,6 +23,7 @@ import EventDetails from './components/EventDetails';
 import AdminPanel from './components/AdminPanel';
 import WebhookDispatcher from './components/WebhookDispatcher';
 import { sound } from './utils/sound';
+import logoImg from './assets/logo.png';
 import './App.css';
 
 // ─── STALE-UPDATE GUARD HELPER ───────────────────────────────────────────────
@@ -461,11 +462,9 @@ export default function App() {
       <header className="dashboard-header">
         <div className="header-left">
           {/* Logo with pulsating neon core */}
-          <div className="brand-logo-wrap" aria-hidden="true">
+          <div className="brand-logo-wrap" title="EventBridge Platform">
             <div className="brand-logo-outer">
-              <div className="brand-logo-inner">
-                <Radio size={20} className="brand-icon-radio" />
-              </div>
+              <img src={logoImg} alt="EventBridge Logo" className="brand-logo-img" />
             </div>
             <span className="brand-pulse-dot" />
           </div>

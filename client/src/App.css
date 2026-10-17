@@ -129,31 +129,29 @@
 }
 
 .brand-logo-outer {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.3) 0%, rgba(139, 92, 246, 0.1) 100%);
-  padding: 1.5px;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+  height: 42px;
+  width: 72px;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 3px 6px;
+  box-shadow: 0 4px 14px rgba(0, 180, 216, 0.25), inset 0 0 0 1px rgba(255, 255, 255, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  overflow: hidden;
 }
 
-.brand-logo-inner {
-  width: 100%;
+.brand-logo-wrap:hover .brand-logo-outer {
+  transform: scale(1.04);
+  box-shadow: 0 6px 18px rgba(0, 180, 216, 0.4);
+}
+
+.brand-logo-img {
   height: 100%;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  transition: transform 0.2s ease;
-}
-
-.brand-logo-wrap:hover .brand-logo-inner {
-  transform: scale(1.05);
+  width: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .brand-pulse-dot {

@@ -10,6 +10,7 @@
 
 - [Architecture Diagram](#architecture-diagram)
 - [Live Demo & Video](#live-demo--video)
+- [Project Structure](#project-structure)
 - [Credentials for Reviewer and Evaluation](#credentials-for-reviewer-and-evaluation)
 - [The Problem](#the-problem)
 - [Our Solution](#our-solution)
@@ -18,7 +19,6 @@
 - [How a Reviewer Can Test It](#how-a-reviewer-can-test-it)
 - [Tech Stack and Rationale](#tech-stack-and-rationale)
 - [API Reference](#api-reference)
-- [Project Structure](#project-structure)
 - [Local Setup Guide](#local-setup-guide)
 - [Deployment](#deployment)
 - [Known Limitations](#known-limitations)
@@ -60,6 +60,34 @@ flowchart TD
 - **Demonstration Video**: <VIDEO_URL>
 
 Note: On the free cloud hosting tier (Render), the application container automatically spins down after 15 minutes of inactivity. The initial HTTP request after an idle window may take approximately 50 to 60 seconds while the container initializes.
+
+---
+
+## Project Structure
+
+```
+EventBridge/
+├── assets/              # Repository media assets and brand logo
+├── client/              # React + Vite frontend
+│   ├── src/             # Dashboard components, telemetry, and sound engine
+│   └── package.json
+├── server/              # Express backend
+│   ├── auth.js          # Shared secret verification and JWT auth helpers
+│   ├── index.js         # Server entrypoint and route mounting
+│   ├── mockDownstream.js# Mock receiver and outage simulation toggle
+│   ├── pipeline.js      # Background delivery pipeline
+│   ├── routes.js        # API routes (events, retry, auth, keepalive)
+│   ├── settings.js      # Persistent key-value configuration in Supabase
+│   ├── sse.js           # Server-Sent Events broadcaster and heartbeats
+│   ├── supabase.js      # Supabase client and connection test
+│   ├── sweeper.js       # Background stale event recovery sweeper
+│   ├── webhook.js       # Webhook ingestion handler and idempotency logic
+│   ├── .env.example     # Environment variable configuration template
+│   └── package.json
+├── .env.example         # Root environment variable template
+├── package.json         # Unified build and start scripts for Render
+└── README.md
+```
 
 ---
 
@@ -308,33 +336,6 @@ The pipeline re-delivers the payload, succeeds with `200 OK`, transitions status
 | POST | `/api/admin/clear-events` | Admin Session Cookie | Purge all events from database (`{"confirm": "DELETE ALL"}`) | 200, 400, 401, 500 |
 | POST | `/api/admin/sign-out-everywhere` | Admin Session Cookie | Increment database `auth_version` to revoke all active tokens | 200, 401, 500 |
 | GET | `/api/stream` | None | Server-Sent Events stream delivering live dashboard updates | 200 |
-
----
-
-## Project Structure
-
-```
-EventBridge/
-├── client/              # React + Vite frontend
-│   ├── src/             # Dashboard components, telemetry, and sound engine
-│   └── package.json
-├── server/              # Express backend
-│   ├── auth.js          # Shared secret verification and JWT auth helpers
-│   ├── index.js         # Server entrypoint and route mounting
-│   ├── mockDownstream.js# Mock receiver and outage simulation toggle
-│   ├── pipeline.js      # Background delivery pipeline
-│   ├── routes.js        # API routes (events, retry, auth, keepalive)
-│   ├── settings.js      # Persistent key-value configuration in Supabase
-│   ├── sse.js           # Server-Sent Events broadcaster and heartbeats
-│   ├── supabase.js      # Supabase client and connection test
-│   ├── sweeper.js       # Background stale event recovery sweeper
-│   ├── webhook.js       # Webhook ingestion handler and idempotency logic
-│   ├── .env.example     # Environment variable configuration template
-│   └── package.json
-├── .env.example         # Root environment variable template
-├── package.json         # Unified build and start scripts for Render
-└── README.md
-```
 
 ---
 
