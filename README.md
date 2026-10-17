@@ -1,195 +1,35 @@
-# EventBridge
+<h1 align="center">EventBridge</h1>
 
-EventBridge is an enterprise webhook ingestion, delivery, and real-time observability platform built with Node.js, Express, Supabase (PostgreSQL), and React.
+<h2 align="center"><strong>Reliable webhook ingestion, delivery, and real-time observability platform.</strong><br>Task ID: EventBridge</h2>
 
-Task ID: EventBridge
+<details>
+<summary style="font-size: 20px; font-weight: bold; cursor: pointer;">Table of Contents</summary>
 
-## Live Demo
+- [Architecture Diagram](#architecture-diagram)
+- [Live Demo & Video](#live-demo--video)
+- [Credentials for Reviewer and Evaluation](#credentials-for-reviewer-and-evaluation)
+- [The Problem](#the-problem)
+- [Our Solution](#our-solution)
+- [How a Reviewer Can Test It](#how-a-reviewer-can-test-it)
+- [Architecture & Event Lifecycle](#architecture--event-lifecycle)
+- [Tech Stack and Rationale](#tech-stack-and-rationale)
+- [Design Decisions](#design-decisions)
+- [Database Schema (What Gets Stored on the Server)](#database-schema-what-gets-stored-on-the-server)
+- [API Reference](#api-reference)
+- [Project Structure](#project-structure)
+- [Local Setup Guide](#local-setup-guide)
+- [Deployment](#deployment)
+- [Known Limitations](#known-limitations)
+- [Branches](#branches)
+- [Credits and References](#credits-and-references)
+- [What I Learned](#what-i-learned)
+- [License](#license)
 
-- Production URL: <LIVE_URL>
-- Demonstration Video: <VIDEO_URL>
+</details>
 
-Note: On the free hosting tier, the service automatically spins down after 15 minutes of inactivity. The first request after an idle period may take approximately 50 to 60 seconds to complete while the container boots.
+---
 
-## Credentials for Reviewer and Evaluation
-
-The following credentials are configured for evaluation and testing:
-
-- Administrator Password: `recruitingmewasyoursmartestdecision`
-- Deployed Production Webhook Secret: `a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2`
-
-These credentials are also submitted separately through the project submission form.
-
-## How a Reviewer Can Test It
-
-Follow these numbered steps to test the full lifecycle of webhook ingestion, deduplication, failure simulation, authentication, and retry recovery.
-
-Replace `<LIVE_URL>` with the deployment address (or `http://localhost:3000` when testing locally).
-
-```bash
-export BASE_URL="<LIVE_URL>"
-export SECRET="a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2"
-```
-
-### 1. Ingest a Valid Webhook
-
-Send a standard webhook request containing a JSON payload and the shared secret header:
-
-```bash
-curl -i -X POST "$BASE_URL/api/webhook" \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: $SECRET" \
-  -d '{"event": "order.created", "orderId": "ord_1001", "amount": 89.50}'
-```
-
-Expected response: `HTTP/1.1 201 Created`
-```json
-{
-  "id": "<UUID>",
-  "status": "Received",
-  "duplicate": false
-}
-```
-
-The background pipeline forwards this payload to the downstream service and transitions its status to `Completed` within 2 seconds.
-
-### 2. Send the Exact Same Webhook Again (Deduplication Test)
-
-Send the exact same request body a second time without an explicit idempotency key header:
-
-```bash
-curl -i -X POST "$BASE_URL/api/webhook" \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: $SECRET" \
-  -d '{"event": "order.created", "orderId": "ord_1001", "amount": 89.50}'
-```
-
-Expected response: `HTTP/1.1 200 OK`
-```json
-{
-  "id": "<SAME_UUID>",
-  "status": "Completed",
-  "duplicate": true
-}
-```
-
-The system computes a SHA-256 fingerprint of the raw body, catches the unique constraint collision in PostgreSQL, updates the existing record timestamp, and skips downstream delivery.
-
-### 3. Send an Unauthorized Webhook (Wrong Secret)
-
-Send a webhook request with an invalid secret:
-
-```bash
-curl -i -X POST "$BASE_URL/api/webhook" \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: invalid_secret_token" \
-  -d '{"event": "test"}'
-```
-
-Expected response: `HTTP/1.1 401 Unauthorized`
-```json
-{
-  "error": "Unauthorized"
-}
-```
-
-The request is rejected before reading or parsing the body payload.
-
-### 4. Watch the Live Dashboard
-
-Open `$BASE_URL` in any web browser. The dashboard connects to `GET /api/stream` using Server-Sent Events (SSE). New events appear live at the top of the table without refreshing the page.
-
-### 5. Sign In as Administrator
-
-Click the "Sign In" button in the upper right corner of the dashboard and enter the administrator password:
-
-`recruitingmewasyoursmartestdecision`
-
-Upon authentication, an `httpOnly`, `sameSite: strict` session cookie (`eventbridge_token`) is set. The dashboard reveals administrator controls, including full payload inspection, downstream simulation toggles, and manual retry actions.
-
-Alternatively, authenticate via curl to save the cookie for CLI tests:
-
-```bash
-curl -i -c cookies.txt -X POST "$BASE_URL/api/login" \
-  -H "Content-Type: application/json" \
-  -d '{"password": "recruitingmewasyoursmartestdecision"}'
-```
-
-Expected response: `HTTP/1.1 200 OK`
-```json
-{
-  "loggedIn": true,
-  "webhookSecret": "<SECRET>"
-}
-```
-
-### 6. Turn Mock Downstream Off (Simulate Outage)
-
-Turn off the mock downstream receiver by toggling the "Downstream" indicator in the administrator navigation bar, or via curl:
-
-```bash
-curl -i -b cookies.txt -X POST "$BASE_URL/api/mock/mode" \
-  -H "Content-Type: application/json" \
-  -d '{"healthy": false}'
-```
-
-Expected response: `HTTP/1.1 200 OK`
-```json
-{
-  "healthy": false
-}
-```
-
-All open dashboards immediately reflect the downstream state change via SSE.
-
-### 7. Create a Failed Event
-
-Dispatch a new unique webhook while the downstream receiver is offline:
-
-```bash
-curl -i -X POST "$BASE_URL/api/webhook" \
-  -H "Content-Type: application/json" \
-  -H "x-webhook-secret: $SECRET" \
-  -d '{"event": "payment.failed_test", "timestamp": "'$(date +%s)'"}'
-```
-
-The ingestion endpoint acknowledges receipt with `201 Created`. The background delivery pipeline attempts delivery, receives `503 Service Unavailable`, and updates the event status to `Failed`. The failure reason `Downstream returned status 503` is stored in Supabase and displayed on the dashboard.
-
-### 8. Press Retry to Recover the Event
-
-1. In the browser dashboard, click the row of the failed event to open the Event Payload Inspector drawer.
-2. Observe the delivery failure banner and attempt counter.
-3. Turn the mock downstream back on using the navigation pill (`{"healthy": true}`).
-4. Click the "Retry Webhook Delivery" button.
-5. The button transitions to "Triggering Retry..." while the server atomically claims the row (`status = 'Received'`).
-6. The background delivery pipeline runs downstream delivery, succeeds with `200 OK`, updates the record to `status = 'Completed'`, and clears the failure reason.
-7. If downstream remains offline, the retry attempt fails again, and the "Retry Webhook Delivery" button immediately re-enables for subsequent attempts.
-
-Alternatively, trigger retry via curl using the event ID:
-
-```bash
-curl -i -b cookies.txt -X POST "$BASE_URL/api/events/<EVENT_UUID>/retry"
-```
-
-Expected response: `HTTP/1.1 202 Accepted`
-```json
-{
-  "id": "<EVENT_UUID>",
-  "status": "Received"
-}
-```
-
-## Features Mapped to Requirements
-
-| Requirement | Implementation Detail |
-|---|---|
-| Webhook Ingestion, Header Secret, and Idempotency | Express buffers raw request bytes to verify `x-webhook-secret` using timing-safe comparison, resolves an idempotency key from headers or SHA-256 body hashing, and performs an insert-then-catch on a PostgreSQL unique constraint to return 201 for new events and 200 for duplicates without executing duplicate downstream deliveries. |
-| Live Dashboard with SSE | The backend exposes `GET /api/stream` using Server-Sent Events with persistent HTTP connections and 25-second heartbeat pings, broadcasting public event telemetry to browser `EventSource` listeners in real time. |
-| Pipeline and Failure Handling | An asynchronous execution pipeline (`pipeline.js`) loads stored event rows, dispatches HTTP POST requests to the downstream consumer with an `AbortSignal` 5-second timeout, increments `attempt_count`, updates database status to `Completed` or `Failed`, and never throws unhandled exceptions. |
-| Manual Retry with Double-Click Protection | The atomic endpoint `POST /api/events/:id/retry` executes a conditional update (`UPDATE events SET status = 'Received' WHERE id = :id AND status = 'Failed'`) to prevent race conditions, while the frontend uses synchronous ref locks (`isRetryingRef`) to block rapid double-clicks and re-enables the button immediately upon failure. |
-| Public Deployment | The project is deployed as a single unified service on Render, where Express serves both the backend `/api/*` endpoints and the compiled React production bundle from `client/dist`, supported by an automated keepalive endpoint (`GET /api/keepalive`). |
-
-## Architecture
+# Architecture Diagram
 
 ```mermaid
 flowchart TD
@@ -210,29 +50,302 @@ flowchart TD
     Sweeper -->|publishEvent Failed| SSEEmitter
 ```
 
-### Event Lifecycle
+---
 
-1. **Received**: The incoming webhook passes secret verification, raw body validation, and idempotency checks. It is stored in Supabase with `status: 'Received'` and `attempt_count: 0`. The server publishes the `Received` row via SSE and returns `201 Created` immediately.
-2. **Completed or Failed**: The background pipeline forwards the stored payload to `DOWNSTREAM_URL` with a 5-second timeout. If the downstream responds with HTTP 2xx, status transitions to `Completed`. If the downstream returns non-2xx, times out, or fails at the network layer, status transitions to `Failed` with an incremented `attempt_count` and a recorded `failure_reason`. The updated row is published over SSE.
-3. **Manual Retry**: An authenticated administrator inspects a `Failed` event and clicks "Retry Webhook Delivery". The server executes an atomic conditional update setting `status: 'Received'`, broadcasts the change over SSE, and re-launches the delivery pipeline. If delivery fails again, the event returns to `Failed` and the retry button remains immediately available for further attempts.
+## Live Demo & Video
+
+- **Production URL**: <LIVE_URL>
+- **Demonstration Video**: <VIDEO_URL>
+
+Note: On the free cloud hosting tier (Render), the application container automatically spins down after 15 minutes of inactivity. The initial HTTP request after an idle window may take approximately 50 to 60 seconds while the container initializes.
+
+---
+
+## Credentials for Reviewer and Evaluation
+
+The following credentials are configured for evaluation and grading:
+
+- **Administrator Password**: `recruitingmewasyoursmartestdecision`
+- **Deployed Production Webhook Secret**: `a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2`
+
+These credentials are also shared through the project submission form.
+
+---
+
+## The Problem
+
+Modern distributed applications rely heavily on webhooks for asynchronous integration across payment processors, version control, and SaaS platforms. Traditional naive webhook receivers face recurring operational failures:
+
+- **Missing Idempotency**: Network retries from upstream webhook providers cause identical payloads to execute multiple times, creating duplicate invoices, duplicate orders, or corrupted account states.
+- **Vulnerability to Timing Attacks**: Naive string comparisons on incoming authentication tokens expose secret lengths and character prefixes through execution time differences.
+- **Blocking Ingestion**: Calling downstream destination APIs synchronously during webhook receipt causes timeouts on the sender side and degrades throughput.
+- **Silent Abandonment on Crashes**: Background promises running in Node memory are terminated when servers reboot or restart, leaving in-flight events stuck in intermediate states indefinitely.
+- **Race Conditions on Manual Retries**: When multiple administrators or automated scripts trigger retries simultaneously, naive select-then-update logic allows duplicate delivery runs to execute in parallel.
+- **Payload Data Leakage**: Exposing raw webhook bodies over public telemetry streams leaks customer PII and authorization tokens to unauthorized observers.
+
+---
+
+## Our Solution
+
+EventBridge resolves these challenges through a hardened ingestion and telemetry architecture:
+
+1. **Fast, Authenticated Ingestion with Idempotency**  
+   Buffers incoming raw request bytes before JSON parsing, executes constant-time secret verification via `crypto.timingSafeEqual`, resolves a unique idempotency key (header or SHA-256 body hash), and performs an insert-then-catch operation against a PostgreSQL unique constraint. New events receive `201 Created`; duplicate deliveries receive `200 OK` and skip downstream dispatch.
+
+2. **Decoupled Asynchronous Delivery Pipeline**  
+   The HTTP ingestion endpoint returns immediately upon database persistence. A background delivery worker (`pipeline.js`) loads the stored payload, forwards it to the downstream endpoint with a strict 5-second `AbortSignal` timeout, records delivery attempts, and updates the database record to `Completed` or `Failed` without throwing unhandled exceptions.
+
+3. **Atomic Conditional Retry Engine with Double-Click Protection**  
+   Administrative retries execute a single conditional SQL statement (`UPDATE events SET status = 'Received' WHERE id = :id AND status = 'Failed'`). PostgreSQL row locks guarantee that only one concurrent caller claims the event. In the frontend, synchronous ref locks (`isRetryingRef`) prevent rapid double-clicks, and locks reset cleanly upon completion so failed events can be retried immediately.
+
+4. **Real-Time Telemetry via Server-Sent Events (SSE)**  
+   The backend exposes `GET /api/stream` using the Server-Sent Events standard (`text/event-stream`). Active browser connections receive real-time monotonic state updates as events are received, completed, failed, or retried, maintained with 25-second heartbeat comment pings.
+
+5. **Stale In-Flight Sweeper**  
+   A background process (`sweeper.js`) inspects the database every 30 seconds for events left in `Received` state for longer than 60 seconds (abandoned by process restarts). Swept events are transitioned to `Failed` with diagnostic error messaging rather than being automatically re-delivered, preventing duplicate side effects and allowing administrator inspection.
+
+6. **Privacy-Preserving Public Visibility with Role-Protected Payloads**  
+   Public visitors can monitor event throughput, status badges, timestamps, and attempt counts. Raw payload contents and downstream error diagnostics are strictly excluded from public APIs and SSE streams, accessible only through authenticated endpoints protected by `httpOnly`, version-validated JWT cookies.
+
+---
+
+## How a Reviewer Can Test It
+
+Follow these numbered steps using curl to test the entire operational flow.
+
+Replace `<LIVE_URL>` with your deployed domain (or `http://localhost:3000` for local runs):
+
+```bash
+export BASE_URL="<LIVE_URL>"
+export SECRET="a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2"
+```
+
+### 1. Ingest a Valid Webhook
+
+Dispatch a valid webhook payload with the shared secret header:
+
+```bash
+curl -i -X POST "$BASE_URL/api/webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $SECRET" \
+  -d '{"event": "order.created", "orderId": "ord_1001", "amount": 89.50}'
+```
+
+Expected response: `HTTP/1.1 201 Created`
+```json
+{
+  "id": "<UUID>",
+  "status": "Received",
+  "duplicate": false
+}
+```
+
+### 2. Send the Same Webhook Again (Deduplication Check)
+
+Send the exact same payload a second time without an explicit idempotency key:
+
+```bash
+curl -i -X POST "$BASE_URL/api/webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $SECRET" \
+  -d '{"event": "order.created", "orderId": "ord_1001", "amount": 89.50}'
+```
+
+Expected response: `HTTP/1.1 200 OK`
+```json
+{
+  "id": "<SAME_UUID>",
+  "status": "Completed",
+  "duplicate": true
+}
+```
+
+PostgreSQL detects the duplicate hash, updates the record timestamp, and skips downstream delivery.
+
+### 3. Send Request with an Invalid Secret (401 Check)
+
+```bash
+curl -i -X POST "$BASE_URL/api/webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: invalid_secret_token" \
+  -d '{"event": "test"}'
+```
+
+Expected response: `HTTP/1.1 401 Unauthorized`
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+### 4. Watch the Dashboard
+
+Open `$BASE_URL` in a browser. Events appear in real time via Server-Sent Events without manual page refreshes.
+
+### 5. Sign In as Administrator
+
+Authenticate to obtain an `httpOnly` admin session cookie:
+
+```bash
+curl -i -c cookies.txt -X POST "$BASE_URL/api/login" \
+  -H "Content-Type: application/json" \
+  -d '{"password": "recruitingmewasyoursmartestdecision"}'
+```
+
+Expected response: `HTTP/1.1 200 OK`
+```json
+{
+  "loggedIn": true,
+  "webhookSecret": "<SECRET>"
+}
+```
+
+### 6. Turn Mock Downstream Off (Simulate Outage)
+
+Toggle the downstream receiver to outage mode:
+
+```bash
+curl -i -b cookies.txt -X POST "$BASE_URL/api/mock/mode" \
+  -H "Content-Type: application/json" \
+  -d '{"healthy": false}'
+```
+
+Expected response: `HTTP/1.1 200 OK`
+```json
+{
+  "healthy": false
+}
+```
+
+### 7. Create a Failed Event
+
+Dispatch a unique event while downstream is offline:
+
+```bash
+curl -i -X POST "$BASE_URL/api/webhook" \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $SECRET" \
+  -d '{"event": "payment.failed_test", "timestamp": "'$(date +%s)'"}'
+```
+
+Ingestion responds with `201 Created`. The delivery pipeline receives `503 Service Unavailable`, transitions status to `Failed`, and records the failure reason.
+
+### 8. Press Retry to Recover the Event
+
+In the browser drawer (or via curl), turn the mock downstream back on:
+
+```bash
+curl -i -b cookies.txt -X POST "$BASE_URL/api/mock/mode" \
+  -H "Content-Type: application/json" \
+  -d '{"healthy": true}'
+```
+
+Trigger an immediate retry on the failed event ID:
+
+```bash
+curl -i -b cookies.txt -X POST "$BASE_URL/api/events/<EVENT_UUID>/retry"
+```
+
+Expected response: `HTTP/1.1 202 Accepted`
+```json
+{
+  "id": "<EVENT_UUID>",
+  "status": "Received"
+}
+```
+
+The pipeline re-delivers the payload, succeeds with `200 OK`, transitions status to `Completed`, and clears the failure message.
+
+---
+
+## Architecture & Event Lifecycle
+
+1. **Received**: The incoming webhook passes timing-safe secret verification and body parsing. It is stored in Supabase with `status: 'Received'` and `attempt_count: 0`. The server publishes the `Received` state over SSE and replies with `201 Created`.
+2. **Completed or Failed**: The background pipeline forwards the stored payload to `DOWNSTREAM_URL` with a 5-second timeout. If downstream responds with HTTP 2xx, status transitions to `Completed`. If it returns non-2xx, times out, or encounters network errors, status transitions to `Failed` with an incremented `attempt_count` and recorded `failure_reason`. The updated row is broadcast over SSE.
+3. **Manual Retry**: An authenticated administrator inspects a `Failed` event and clicks "Retry Webhook Delivery". The server conditionally updates the row to `Received`, broadcasts the change via SSE, and re-launches the delivery pipeline. If downstream fails again, the event returns to `Failed` and the retry button remains immediately enabled.
+
+---
 
 ## Tech Stack and Rationale
 
 | Technology | Role | Rationale |
 |---|---|---|
-| React 19 + Vite | Frontend Dashboard | Rapid development, fast compilation, lightweight bundle size, and responsive client-side state synchronization with Server-Sent Events. |
-| Node.js + Express | Backend Web Service | Mature middleware ecosystem allowing raw request byte buffering before JSON parsing, native async/await handling, and unified static SPA hosting. |
-| Supabase (PostgreSQL) | Persistence Layer | Strict relational schema enforcement, ACID transactions, native UUID generation, and database-level unique constraints required for concurrency-safe idempotency and atomic state transitions. |
-| Server-Sent Events (SSE) | Real-Time Telemetry | Webhook observability requires strictly one-way server-to-client streaming. SSE operates over standard HTTP (`text/event-stream`), includes built-in browser reconnection via `EventSource`, avoids WebSocket connection upgrade overhead, and works reliably through reverse proxies. |
+| React 19 + Vite | Frontend Dashboard | Fast local builds, minimal bundle overhead, responsive state synchronization, and component modularity. |
+| Node.js + Express | Backend Application Server | Middleware ordering flexibility allowing raw body buffering before JSON parsing, native async/await, and single-port SPA serving. |
+| Supabase (PostgreSQL) | Database & Storage | ACID transactions, native UUID keys, strict unique constraints for deduplication, and atomic conditional update semantics. |
+| Server-Sent Events (SSE) | Real-Time Broadcast | Unidirectional server-to-client streaming using standard HTTP (`text/event-stream`), built-in browser reconnection, and zero WebSocket upgrade complexity. |
+
+---
 
 ## Design Decisions
 
-- **Insert-Then-Catch for Idempotency**: Rather than performing a `SELECT` query followed by a conditional `INSERT` (which introduces a race condition between the read and write operations), the webhook route executes an immediate `INSERT` into the `events` table. PostgreSQL enforces a `UNIQUE` constraint on `idempotency_key`. If a duplicate arrives concurrently, the database returns error code `23505`. The catch block intercepts this code, updates `updated_at`, and returns `200 OK` with `duplicate: true`, completely eliminating race conditions.
-- **Atomic Conditional UPDATE for Retry**: When an administrator retries an event, the server runs `UPDATE events SET status = 'Received', updated_at = now() WHERE id = :id AND status = 'Failed' RETURNING *`. PostgreSQL row-level locks guarantee that only one concurrent caller can change the row. If two administrators click retry simultaneously, only one query modifies a row; the other receives zero rows and returns `409 Conflict`.
-- **Timing-Safe Secret Comparison**: Standard string comparison (`===`) terminates on the first mismatched byte, exposing secret lengths and prefix matches to timing analysis attacks. Both the expected and incoming secret strings are hashed with SHA-256 to fixed 32-byte buffers and evaluated using Node's `crypto.timingSafeEqual`, guaranteeing constant execution time.
-- **httpOnly Cookie with Versioned JWT**: Administrator sessions are maintained using signed JSON Web Tokens stored in an `httpOnly`, `sameSite: 'strict'`, `secure` cookie named `eventbridge_token`. This protects session tokens from client-side script inspection (XSS defense) and cross-origin injection (CSRF defense). To allow instant global token invalidation without a database blocklist, each token embeds a numeric `auth_version`. The server increments `auth_version` in the database settings table during "Sign Out Everywhere", instantly invalidating older tokens across all devices.
-- **Payload Privacy on Public APIs**: Public visitors can inspect system metrics, statuses, timestamps, and attempt counts via `GET /api/events` and the SSE stream. Raw ingested payloads and downstream error traces are strictly excluded from public responses to prevent exposure of customer PII or sensitive API data. Full payloads are accessible only through `GET /api/events/:id` protected by admin authentication.
-- **Server-Sent Events over WebSockets**: The dashboard requires only downlink telemetry (server pushing database changes to clients). WebSockets introduce bidirectional overhead, custom connection upgrade handshakes, and stateful protocol management. SSE runs over standard HTTP, natively traverses firewalls and proxies, and features automatic reconnection.
+- **Insert-Then-Catch for Idempotency**: Rather than running a read query before write (which leaves a concurrency race condition window), the webhook route runs a direct `INSERT`. PostgreSQL enforces a `UNIQUE` constraint on `idempotency_key`. Collisions raise database error `23505`, which is caught to update the timestamp and return `200 OK` with `duplicate: true`, eliminating race conditions.
+- **Atomic Conditional UPDATE for Retry**: To prevent concurrent duplicate retries, the server runs `UPDATE events SET status = 'Received', updated_at = now() WHERE id = :id AND status = 'Failed' RETURNING *`. PostgreSQL row locks ensure only one caller can match the condition and win the claim; concurrent callers receive zero rows and an immediate `409 Conflict`.
+- **Timing-Safe Secret Comparison**: Plain string equality (`===`) exits early on the first mismatched character. We hash both strings with SHA-256 into 32-byte buffers and compare with `crypto.timingSafeEqual`, guaranteeing constant execution time and eliminating timing side-channel attacks.
+- **httpOnly Cookie with Versioned JWT**: Admin authentication issues an `httpOnly`, `sameSite: 'strict'`, `secure` cookie named `eventbridge_token`. To enable instantaneous global token revocation without a database blocklist, tokens embed a numeric `auth_version`. The server increments `auth_version` in Supabase during "Sign Out Everywhere", immediately invalidating older tokens across all devices.
+- **Payload Privacy on Public APIs**: Public endpoints (`GET /api/events`) and public SSE streams omit raw payloads and internal failure traces to protect customer PII and API keys. Full payloads are accessible only through `GET /api/events/:id` guarded by admin session verification.
+- **Server-Sent Events over WebSockets**: The dashboard requires only one-way server-to-browser notifications. SSE operates over regular HTTP, requires no custom gateway, and includes native browser reconnection.
+
+---
+
+## Database Schema (What Gets Stored on the Server)
+
+The database consists of two tables created in Supabase PostgreSQL:
+
+### 1. `events` Table
+
+Persists incoming webhook deliveries, idempotency signatures, and execution statuses:
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | Unique event identifier (`gen_random_uuid()`) |
+| `idempotency_key` | TEXT | UNIQUE, NOT NULL | Deduplication key (header or SHA-256 body hash) |
+| `payload` | JSONB | NOT NULL | Raw ingested webhook payload |
+| `status` | TEXT | NOT NULL | Current state (`'Received'`, `'Completed'`, `'Failed'`) |
+| `attempt_count` | INTEGER | NOT NULL | Number of delivery attempts (defaults to `0`) |
+| `failure_reason` | TEXT | NULLABLE | Downstream error trace or timeout message |
+| `created_at` | TIMESTAMPTZ | NOT NULL | Initial ingestion timestamp |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Timestamp of last state change |
+
+```sql
+CREATE TABLE events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  idempotency_key TEXT UNIQUE NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Received',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  failure_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_events_created_at ON events (created_at DESC);
+CREATE INDEX idx_events_status_updated ON events (status, updated_at);
+```
+
+### 2. `settings` Table
+
+Maintains runtime configurations across server restarts and process instances:
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `key` | TEXT | PRIMARY KEY | Configuration key name |
+| `value` | TEXT | NOT NULL | String-serialized configuration value |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Last update timestamp |
+
+```sql
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO settings (key, value) VALUES
+  ('mock_healthy', 'true'),
+  ('auth_version', '1');
+```
+
+---
 
 ## API Reference
 
@@ -255,49 +368,7 @@ flowchart TD
 | POST | `/api/admin/sign-out-everywhere` | Admin Session Cookie | Increment database `auth_version` to revoke all active tokens | 200, 401, 500 |
 | GET | `/api/stream` | None | Server-Sent Events stream delivering live dashboard updates | 200 |
 
-## Database Schema
-
-The database consists of two tables created in Supabase PostgreSQL:
-
-### 1. `events` Table
-
-Stores ingested webhook deliveries, deduplication signatures, and lifecycle states.
-
-```sql
-CREATE TABLE events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  idempotency_key TEXT UNIQUE NOT NULL,
-  payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Received',
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  failure_reason TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Index for ordering by recency
-CREATE INDEX idx_events_created_at ON events (created_at DESC);
-
--- Index for atomic retry lookups and sweeper queries
-CREATE INDEX idx_events_status_updated ON events (status, updated_at);
-```
-
-### 2. `settings` Table
-
-Stores persistent runtime configuration surviving server restarts and multiple process instances.
-
-```sql
-CREATE TABLE settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Initial configuration records
-INSERT INTO settings (key, value) VALUES
-  ('mock_healthy', 'true'),
-  ('auth_version', '1');
-```
+---
 
 ## Project Structure
 
@@ -324,25 +395,26 @@ EventBridge/
 └── README.md
 ```
 
-## Local Setup
+---
 
-### Prerequisites
+## Local Setup Guide
+
+### 1. Prerequisites
 
 - Node.js (v18.0.0 or higher, tested with Node v20/v26)
 - npm (v9.0.0 or higher)
 - A Supabase project (or PostgreSQL instance with the schema above)
 
-### 1. Clone the Repository
+### 2. Clone the Repository
 
 ```bash
 git clone <REPO_URL>
 cd EventBridge
 ```
 
+### 3. Configure Environment Variables
 
-### 2. Configure Environment Variables
-
-Create `server/.env` based on the configuration template below:
+Copy the environment template in the `server` directory:
 
 ```bash
 # Windows
@@ -366,7 +438,7 @@ Configure the variable names in `server/.env`:
 | `DOWNSTREAM_URL` | Target endpoint for webhook forwarding (optional, defaults to local mock). |
 | `DOWNSTREAM_DELAY_MS` | Artificial response delay in milliseconds for testing (default: `0`). |
 
-### 3. Install Dependencies
+### 4. Install Dependencies
 
 Install dependencies across both client and server:
 
@@ -375,7 +447,7 @@ npm install --prefix client
 npm install --prefix server
 ```
 
-### 4. Run in Development Mode (Dual Process)
+### 5. Run in Development Mode (Dual Process)
 
 Run the backend Express server:
 
@@ -393,7 +465,7 @@ npm run dev
 
 Open `http://localhost:5173` in your browser.
 
-### 5. Run Single-Port Unified Production Service
+### 6. Run Single-Port Unified Production Service
 
 To test the unified production build locally:
 
@@ -404,7 +476,9 @@ npm start
 
 Open `http://localhost:3000` in your browser.
 
-## Deployment Notes
+---
+
+## Deployment
 
 EventBridge is configured for deployment as a single unified service on Render backed by Supabase.
 
@@ -436,6 +510,8 @@ To prevent the Render free tier from idling after 15 minutes and to keep the Sup
 - Method: `GET`
 - Interval: Every 5 to 10 minutes
 
+---
+
 ## Known Limitations
 
 - **In-Memory Background Pipeline & Stale Sweeper**: Webhook delivery runs asynchronously in the memory space of the active Node process. If the server crashes or restarts during delivery, the in-memory promise is lost, leaving the database row in the `Received` state. A background sweeper (`sweeper.js`) runs every 30 seconds and transitions any event stuck in `Received` for longer than 60 seconds to `Failed`, allowing an administrator to inspect and retry it. A distributed production architecture would replace in-memory execution with a persistent queue (such as Redis/BullMQ or AWS SQS).
@@ -443,12 +519,16 @@ To prevent the Render free tier from idling after 15 minutes and to keep the Sup
 - **Single Shared Administrator Password**: Authentication relies on a single shared secret configured in `ADMIN_PASSWORD`. There are no multi-user profiles, individual account provisions, or granular role-based permissions.
 - **Free-Tier Cold Starts**: On free hosting plans, instances spin down after inactivity, causing initial cold-start latency of up to 60 seconds on incoming requests.
 
+---
+
 ## Branches
 
 | Branch | Status | Contents |
 |---|---|---|
 | `main` | Deployed | Active production branch containing the full Express backend, React client, unified Render single-service deployment, keepalive monitor, and retry re-usability bugfix. |
 | `UI-testing` | Not merged / Not deployed | Experimental feature branch containing UI redesign prototypes, Web Audio sound synthesis, and Webhook Studio presets. Stable changes were incorporated into main. |
+
+---
 
 ## Credits and References
 
@@ -467,9 +547,17 @@ To prevent the Render free tier from idling after 15 minutes and to keep the Sup
 | Vite | https://vite.dev/ | Frontend compilation, bundling, and local development server. |
 | Additional References | <ADD ANY TUTORIAL OR REPO I USED> | Placeholder for external tutorials or reference repositories consulted. |
 
+---
+
 ## What I Learned
 
 - **Idempotency**: <WRITE WHAT YOU LEARNED ABOUT IDEMPOTENCY AND INSERT-THEN-CATCH CONCURRENCY>
 - **Server-Sent Events**: <WRITE WHAT YOU LEARNED ABOUT SSE VS WEBSOCKETS FOR UNIDIRECTIONAL TELEMETRY>
 - **Concurrency & Atomicity**: <WRITE WHAT YOU LEARNED ABOUT ATOMIC CONDITIONAL SQL UPDATES FOR CLAIMING RETRIES>
 - **Unified Deployment**: <WRITE WHAT YOU LEARNED ABOUT SERVING SINGLE-PAGE APPS AND APIS FROM ONE EXPRESS SERVICE>
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
