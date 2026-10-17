@@ -14,7 +14,8 @@ import {
   EyeOff,
   Wand2,
   FileCode,
-  Flame
+  Flame,
+  Lock
 } from 'lucide-react';
 import { sound } from '../utils/sound';
 
@@ -93,7 +94,7 @@ const PRESETS = [
   }
 ];
 
-export default function WebhookDispatcher({ showToast, soundEnabled }) {
+export default function WebhookDispatcher({ showToast, soundEnabled, isLoggedIn }) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('dispatcher'); // 'dispatcher' | 'curl' | 'js' | 'python'
   const [selectedPreset, setSelectedPreset] = useState('payment');
@@ -177,7 +178,7 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
 
     const headers = {
       'Content-Type': 'application/json',
-      'x-webhook-secret': secret.trim()
+      'x-webhook-secret': isLoggedIn ? secret.trim() : DEFAULT_SECRET
     };
     if (customKey.trim()) {
       headers['idempotency-key'] = customKey.trim();
@@ -243,8 +244,8 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
     }
   }
 
-  // Code generator
-  const cleanSecret = secret.trim() || 'YOUR_SECRET';
+  // Code generator (masks secret for visitors)
+  const cleanSecret = isLoggedIn ? (secret.trim() || 'YOUR_SECRET') : 'YOUR_WEBHOOK_SECRET';
   const curlCode = `curl -X POST ${webhookUrl} \\
   -H "Content-Type: application/json" \\
   -H "x-webhook-secret: ${cleanSecret}" ${customKey ? `\\\n  -H "idempotency-key: ${customKey}" ` : ''}\\
@@ -432,34 +433,47 @@ print(response.status_code, response.json())`;
 
                 {/* Right: Security & Headers Config */}
                 <div className="dispatcher-config-col">
-                  {/* Secret Input */}
+                  {/* Secret Input - Only visible & customizable for Admin */}
                   <div className="config-field">
                     <div className="config-label-row">
                       <label htmlFor="secret-input" className="config-label">
                         <KeyRound size={13} />
                         <span>Webhook Secret (x-webhook-secret)</span>
                       </label>
-                      <button
-                        type="button"
-                        className="btn-toggle-secret"
-                        onClick={() => setShowSecret((p) => !p)}
-                        title={showSecret ? 'Hide secret' : 'Show secret'}
-                      >
-                        {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
-                      </button>
+                      {isLoggedIn ? (
+                        <button
+                          type="button"
+                          className="btn-toggle-secret"
+                          onClick={() => setShowSecret((p) => !p)}
+                          title={showSecret ? 'Hide secret' : 'Show secret'}
+                        >
+                          {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+                        </button>
+                      ) : (
+                        <span className="badge-admin-locked" title="Admin authentication required to view/edit secret">
+                          <Lock size={11} />
+                          <span>Admin Only</span>
+                        </span>
+                      )}
                     </div>
                     <div className="input-with-action">
                       <input
                         id="secret-input"
-                        type={showSecret ? 'text' : 'password'}
-                        className="form-input font-mono input-sm"
-                        value={secret}
-                        onChange={(e) => setSecret(e.target.value)}
-                        placeholder="Enter webhook secret..."
+                        type={isLoggedIn && showSecret ? 'text' : 'password'}
+                        className={`form-input font-mono input-sm ${!isLoggedIn ? 'input-locked' : ''}`}
+                        value={isLoggedIn ? secret : '••••••••••••••••••••••••••••••••'}
+                        onChange={(e) => {
+                          if (isLoggedIn) setSecret(e.target.value);
+                        }}
+                        readOnly={!isLoggedIn}
+                        disabled={!isLoggedIn}
+                        placeholder={isLoggedIn ? 'Enter webhook secret...' : 'Hidden (Admin only)'}
                       />
                     </div>
                     <span className="field-hint">
-                      Verified server-side via timingSafeEqual. Defaults to local test secret.
+                      {isLoggedIn
+                        ? 'Verified server-side via timingSafeEqual. Configured secret will be sent in headers.'
+                        : 'Webhook secret is protected and only visible to administrators. Sign in as admin to view or modify.'}
                     </span>
                   </div>
 

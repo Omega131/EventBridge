@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import { Lock, Eye, EyeOff, ArrowRight, AlertCircle, Sparkles, X } from 'lucide-react';
-
-const DEMO_PASSWORD = 'recruitingmewasyoursmartestdecision';
+import { Lock, Eye, EyeOff, ArrowRight, AlertCircle, X } from 'lucide-react';
 
 export default function LoginForm({ onLogin, isLoading, errorMessage, onCancel }) {
   const [password, setPassword] = useState('');
@@ -11,10 +9,6 @@ export default function LoginForm({ onLogin, isLoading, errorMessage, onCancel }
     event.preventDefault();
     if (!password.trim() || isLoading) return;
     onLogin(password);
-  }
-
-  function handleUseDemoPassword() {
-    setPassword(DEMO_PASSWORD);
   }
 
   return (
@@ -80,20 +74,6 @@ export default function LoginForm({ onLogin, isLoading, errorMessage, onCancel }
           </button>
         </div>
 
-        {/* Quick Demo Helper Hint */}
-        <div className="login-helper-row">
-          <span className="demo-hint-text">
-            Testing environment?
-          </span>
-          <button
-            type="button"
-            className="btn-demo-fill"
-            onClick={handleUseDemoPassword}
-          >
-            <Sparkles size={11} className="inline mr-1 text-indigo-400" />
-            Auto-fill demo password
-          </button>
-        </div>
       </form>
 
       {errorMessage && (

@@ -11,7 +11,6 @@ import {
   VolumeX,
   Sun,
   Moon,
-  RotateCw,
   Sparkles,
   Zap,
   Radio,
@@ -134,7 +133,6 @@ export default function App() {
   // Toolbar & filter state
   const [statusFilter, setStatusFilter] = useState('All'); // 'All' | 'Received' | 'Completed' | 'Failed'
   const [searchQuery, setSearchQuery] = useState('');
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const searchInputRef = useRef(null);
   const selectedEventIdRef = useRef(selectedEventId);
@@ -203,8 +201,7 @@ export default function App() {
     }
   }
 
-  async function fetchEvents(isManual = false) {
-    if (isManual) setIsRefreshing(true);
+  async function fetchEvents() {
     setEventsError(null);
 
     try {
@@ -219,15 +216,11 @@ export default function App() {
         }
         return mergedList;
       });
-      if (isManual) {
-        showToast('Event stream synced', 'info');
-      }
     } catch (err) {
       console.error('App: Error fetching events:', err.message);
       setEventsError('Unable to connect to backend on port 3000.');
     } finally {
       setIsLoadingEvents(false);
-      if (isManual) setIsRefreshing(false);
     }
   }
 
@@ -552,6 +545,7 @@ export default function App() {
         <WebhookDispatcher
           showToast={showToast}
           soundEnabled={soundEnabled}
+          isLoggedIn={isLoggedIn}
         />
 
         {/* ─── 3. METRICS & TELEMETRY HUD ROW ─── */}
@@ -713,17 +707,6 @@ export default function App() {
                 <span className="search-kbd-hint font-mono">/</span>
               )}
             </div>
-
-            {/* Refresh Button */}
-            <button
-              type="button"
-              className="btn btn-secondary btn-icon-only"
-              onClick={() => fetchEvents(true)}
-              title="Refresh events from server"
-              disabled={isRefreshing}
-            >
-              <RotateCw size={15} className={isRefreshing ? 'animate-spin' : ''} />
-            </button>
 
             {/* Export Dropdown / Buttons */}
             {events.length > 0 && (

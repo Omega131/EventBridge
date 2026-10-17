@@ -770,6 +770,28 @@
   color: var(--text-primary);
 }
 
+.badge-admin-locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  background: rgba(244, 63, 94, 0.12);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.25);
+  letter-spacing: 0.02em;
+}
+
+.input-locked {
+  cursor: not-allowed;
+  background: var(--bg-surface-sunken) !important;
+  color: var(--text-muted) !important;
+  user-select: none;
+  letter-spacing: 0.15em;
+}
+
 .field-hint {
   font-size: 0.7rem;
   color: var(--text-muted);
