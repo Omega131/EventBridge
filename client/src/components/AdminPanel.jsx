@@ -26,6 +26,10 @@ export default function AdminPanel({
   const [isClearingEvents, setIsClearingEvents] = useState(false);
   const [isSigningOutEverywhere, setIsSigningOutEverywhere] = useState(false);
 
+  const isTogglingRef = useRef(false);
+  const isClearingRef = useRef(false);
+  const isSigningOutRef = useRef(false);
+
   useEffect(() => {
     function handleClickOutside(event) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
@@ -67,6 +71,8 @@ export default function AdminPanel({
 
   // Toggle mock downstream mode
   async function handleToggleMock() {
+    if (isTogglingRef.current || isTogglingMock) return;
+    isTogglingRef.current = true;
     setIsTogglingMock(true);
     sound.playTap(soundEnabled);
 
@@ -95,12 +101,15 @@ export default function AdminPanel({
       console.error('Failed to toggle mock downstream:', err);
       showToast?.('Could not change downstream mode. Check backend server.', 'error');
     } finally {
+      isTogglingRef.current = false;
       setIsTogglingMock(false);
     }
   }
 
   // Clear all events
   async function handleClearEventsConfirm() {
+    if (isClearingRef.current || isClearingEvents) return;
+    isClearingRef.current = true;
     setIsClearingEvents(true);
 
     try {
@@ -131,12 +140,15 @@ export default function AdminPanel({
       console.error('Error clearing events:', err);
       showToast?.('Could not clear events. Please try again.', 'error');
     } finally {
+      isClearingRef.current = false;
       setIsClearingEvents(false);
     }
   }
 
   // Sign out everywhere
   async function handleSignOutEverywhere() {
+    if (isSigningOutRef.current || isSigningOutEverywhere) return;
+    isSigningOutRef.current = true;
     setIsSigningOutEverywhere(true);
     try {
       await fetch('/api/admin/sign-out-everywhere', {
@@ -148,6 +160,7 @@ export default function AdminPanel({
       console.error('Sign out everywhere failed:', err);
       showToast?.('Could not sign out everywhere. Check connection.', 'error');
     } finally {
+      isSigningOutRef.current = false;
       setIsSigningOutEverywhere(false);
       setIsDropdownOpen(false);
       onSignedOut?.();

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Terminal,
@@ -104,6 +104,7 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
   const [showSecret, setShowSecret] = useState(false);
   const [customKey, setCustomKey] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const isSendingRef = useRef(false);
   const [lastResult, setLastResult] = useState(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -155,6 +156,8 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
 
   async function handleFireWebhook(e) {
     e.preventDefault();
+    if (isSendingRef.current || isSending) return;
+
     let parsedBody;
     try {
       parsedBody = JSON.parse(jsonText);
@@ -168,6 +171,7 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
       return;
     }
 
+    isSendingRef.current = true;
     setIsSending(true);
     setLastResult(null);
 
@@ -234,6 +238,7 @@ export default function WebhookDispatcher({ showToast, soundEnabled }) {
       });
       showToast('Could not reach backend server on port 3000', 'error');
     } finally {
+      isSendingRef.current = false;
       setIsSending(false);
     }
   }

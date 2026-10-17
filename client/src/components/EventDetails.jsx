@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   X,
   Copy,
@@ -26,11 +26,15 @@ export default function EventDetails({
   soundEnabled
 }) {
   const [retrying, setRetrying] = useState(false);
+  const [claimedEventId, setClaimedEventId] = useState(null);
+  const isRetryingRef = useRef(false);
+
+  const retryTriggered = Boolean(eventDetails?.id && claimedEventId === eventDetails.id);
+
   const [copiedPayload, setCopiedPayload] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [activeTab, setActiveTab] = useState('payload'); // 'payload' | 'metadata'
-
 
   useEffect(() => {
     function handleKeyDown(e) {
@@ -43,7 +47,14 @@ export default function EventDetails({
   }, [onClose]);
 
   async function handleRetry() {
-    if (!eventDetails || !eventDetails.id) return;
+    // SYNCHRONOUS DOUBLE-CLICK GUARD:
+    // React state updates (setRetrying) are batched and asynchronous.
+    // If a user clicks twice within ~100ms, the second click enters before React re-renders
+    // with disabled=true. Checking isRetryingRef.current synchronously blocks the second click immediately.
+    if (!eventDetails || !eventDetails.id || isRetryingRef.current || retrying || retryTriggered) {
+      return;
+    }
+    isRetryingRef.current = true;
     setRetrying(true);
 
     try {
@@ -53,6 +64,7 @@ export default function EventDetails({
       });
 
       if (response.status === 202) {
+        setClaimedEventId(eventDetails.id); // Optimistically lock retry for this event
         sound.playSuccess(soundEnabled);
         confetti({
           particleCount: 30,
@@ -62,6 +74,7 @@ export default function EventDetails({
         });
         showToast?.('Retry pipeline triggered', 'success');
       } else if (response.status === 409) {
+        setClaimedEventId(eventDetails.id);
         showToast?.('Event is already being retried or has completed', 'warning');
       } else if (response.status === 401) {
         showToast?.('Session expired. Please sign in again.', 'error');
@@ -72,6 +85,7 @@ export default function EventDetails({
     } catch (err) {
       console.error('Error requesting retry:', err);
       showToast?.('Network error triggering retry', 'error');
+      isRetryingRef.current = false;
     } finally {
       setRetrying(false);
     }
@@ -367,11 +381,17 @@ export default function EventDetails({
               <button
                 type="button"
                 onClick={handleRetry}
-                disabled={retrying}
+                disabled={retrying || retryTriggered}
                 className="btn btn-primary btn-retry-glowing"
               >
                 <RotateCw size={14} className={retrying ? 'animate-spin' : ''} />
-                <span>{retrying ? 'Triggering Retry...' : 'Retry Webhook Delivery'}</span>
+                <span>
+                  {retrying
+                    ? 'Triggering Retry...'
+                    : retryTriggered
+                    ? 'Retry Claimed (In-Flight)'
+                    : 'Retry Webhook Delivery'}
+                </span>
               </button>
             )}
 
