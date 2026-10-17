@@ -1,5 +1,8 @@
 <h1 align="center">EventBridge</h1>
 
+<img width="2752" height="1536" alt="Gemini_Generated_Image_m81v0em81v0em81v" src="https://github.com/user-attachments/assets/ee37b11f-8499-43af-8aed-142e3a0c93e7" />
+
+
 <h2 align="center"><strong>Reliable webhook ingestion, delivery, and real-time observability platform.</strong><br>Task ID: EventBridge</h2>
 
 <details>
@@ -473,7 +476,6 @@ To prevent the Render free tier from idling after 15 minutes and to keep the Sup
 | Lucide React | https://lucide.dev/ | Dashboard iconography and telemetry status indicators. |
 | Tailwind CSS | https://tailwindcss.com/ | Modern utility classes for responsive dashboard layout. |
 | Vite | https://vite.dev/ | Frontend compilation, bundling, and local development server. |
-| Additional References | <ADD ANY TUTORIAL OR REPO I USED> | Placeholder for external tutorials or reference repositories consulted. |
 
 ---
 
