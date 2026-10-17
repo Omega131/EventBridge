@@ -1,48 +1,47 @@
 import { useState, useEffect, useRef } from 'react';
+import {
+  Activity,
+  CheckCircle2,
+  AlertTriangle,
+  Clock,
+  TrendingUp,
+  Search,
+  X,
+  Volume2,
+  VolumeX,
+  Sun,
+  Moon,
+  RotateCw,
+  Sparkles,
+  Zap,
+  Radio,
+  FileSpreadsheet,
+  FileJson
+} from 'lucide-react';
 import LoginForm from './components/LoginForm';
 import EventTable from './components/EventTable';
 import EventDetails from './components/EventDetails';
 import AdminPanel from './components/AdminPanel';
+import WebhookDispatcher from './components/WebhookDispatcher';
+import { sound } from './utils/sound';
 import './App.css';
 
 // ─── STALE-UPDATE GUARD HELPER ───────────────────────────────────────────────
-// WHAT: Merges a single incoming event row into an existing event list using a stale-update guard.
-// WHY: In a live distributed application, HTTP responses and Server-Sent Events can arrive out of order.
-// If a slower full re-fetch (GET /api/events) or delayed network packet resolves AFTER a newer live update
-// has already changed an event's status to "Completed" or "Failed", a naive overwrite would move the event
-// backwards to an old status. By comparing Date.parse(incoming.updated_at) against the stored updated_at,
-// we ensure older updates are ignored and state changes remain strictly monotonic.
 function mergeEvent(list, incoming) {
-  if (!incoming || !incoming.id) {
-    return list;
-  }
+  if (!incoming || !incoming.id) return list;
 
-  // Parse incoming updated_at timestamp as milliseconds since epoch (fallback to 0 if missing)
   const incomingUpdatedAtMs = incoming.updated_at ? Date.parse(incoming.updated_at) : 0;
   let found = false;
   const nextList = [];
 
-  // Plain loop through the existing list
   for (let i = 0; i < list.length; i++) {
     const existing = list[i];
     if (existing.id === incoming.id) {
       found = true;
       const existingUpdatedAtMs = existing.updated_at ? Date.parse(existing.updated_at) : 0;
-
-      // WHAT: Replace existing row ONLY if incoming.updated_at is newer than or equal to stored
-      // WHY: Stops an older response or delayed SSE packet from overwriting a newer live update.
       if (incomingUpdatedAtMs >= existingUpdatedAtMs) {
         nextList.push(incoming);
       } else {
-        console.log(
-          'mergeEvent: Ignored older update for event ' +
-            incoming.id +
-            '. Incoming updated_at (' +
-            incoming.updated_at +
-            ') < stored (' +
-            existing.updated_at +
-            ')'
-        );
         nextList.push(existing);
       }
     } else {
@@ -50,38 +49,27 @@ function mergeEvent(list, incoming) {
     }
   }
 
-  // WHAT: If the id was not in the list, append it as a newly discovered event
   if (!found) {
     nextList.push(incoming);
   }
 
-  // WHAT: Return the list sorted by created_at descending (newest first), then id descending as tie-breaker
-  // WHY: Matches the canonical server sort order so the UI stays consistent.
   nextList.sort((a, b) => {
     const timeA = a.created_at ? Date.parse(a.created_at) : 0;
     const timeB = b.created_at ? Date.parse(b.created_at) : 0;
-    if (timeB !== timeA) {
-      return timeB - timeA; // Descending by creation time
-    }
-    return (b.id || '').localeCompare(a.id || ''); // Descending by ID as tie-breaker
+    if (timeB !== timeA) return timeB - timeA;
+    return (b.id || '').localeCompare(a.id || '');
   });
 
   return nextList;
 }
 
-// ─── MAIN APPLICATION COMPONENT ──────────────────────────────────────────────
-function App() {
-
-  // ─── THEME ENGINE (LIGHT / DARK) ─────────────────────────────────────────
-  // WHAT: Theme state ('light' or 'dark').
-  // WHY: Defaults to the user's system setting, remembers choice in localStorage inside try/catch.
+export default function App() {
+  // ─── THEME ENGINE ────────────────────────────────────────────────────────
   const [theme, setTheme] = useState(() => {
     try {
       const saved = localStorage.getItem('eventbridge-theme');
-      if (saved === 'dark' || saved === 'light') {
-        return saved;
-      }
-    } catch (_) {}
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch {}
     if (
       typeof window !== 'undefined' &&
       window.matchMedia &&
@@ -89,23 +77,41 @@ function App() {
     ) {
       return 'dark';
     }
-    return 'light';
+    return 'dark'; // High-tech dark mode by default
   });
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     try {
       localStorage.setItem('eventbridge-theme', theme);
-    } catch (_) {}
+    } catch {}
   }, [theme]);
 
   function toggleTheme() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }
 
+  // ─── SOUND TELEMETRY SETTING ─────────────────────────────────────────────
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try {
+      const saved = localStorage.getItem('eventbridge-sound');
+      if (saved !== null) return saved === 'true';
+    } catch {}
+    return true; // Default sound on for live feeling
+  });
+
+  function toggleSound() {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('eventbridge-sound', String(next));
+      } catch {}
+      if (next) sound.playPing(true);
+      return next;
+    });
+  }
 
   // ─── APPLICATION STATE ───────────────────────────────────────────────────
-
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [events, setEvents] = useState([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(true);
@@ -128,26 +134,9 @@ function App() {
   // Toolbar & filter state
   const [statusFilter, setStatusFilter] = useState('All'); // 'All' | 'Received' | 'Completed' | 'Failed'
   const [searchQuery, setSearchQuery] = useState('');
-  const [isWebhookCardOpen, setIsWebhookCardOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-
-  // ─── TOAST NOTIFICATION SYSTEM ───────────────────────────────────────────
-
-  function showToast(text, kind = 'info') {
-    const id = Date.now() + '-' + Math.random().toString(36).substring(2, 9);
-    console.log('App: Showing toast (' + kind + '):', text);
-
-    setToasts((previousToasts) => [...previousToasts, { id, text, kind }]);
-
-    setTimeout(() => {
-      console.log('App: Auto-removing toast after 4s:', id);
-      setToasts((previousToasts) => previousToasts.filter((t) => t.id !== id));
-    }, 4000);
-  }
-
-
-  // ─── REFS FOR LIVE STREAM ───────────────────────────────────────────────
-
+  const searchInputRef = useRef(null);
   const selectedEventIdRef = useRef(selectedEventId);
   useEffect(() => {
     selectedEventIdRef.current = selectedEventId;
@@ -160,28 +149,41 @@ function App() {
 
   const highlightTimerRef = useRef(null);
 
+  // ─── KEYBOARD SHORTCUTS ──────────────────────────────────────────────────
+  useEffect(() => {
+    function handleGlobalKeyDown(e) {
+      if ((e.key === '/' || (e.ctrlKey && e.key === 'k') || (e.metaKey && e.key === 'k')) && document.activeElement !== searchInputRef.current) {
+        if (!['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  // ─── TOAST NOTIFICATIONS ─────────────────────────────────────────────────
+  function showToast(text, kind = 'info') {
+    const id = Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, text, kind }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4000);
+  }
 
   // ─── AUTHENTICATION HELPERS ──────────────────────────────────────────────
-
   function handleSignedOut() {
-    console.log('App: Clearing admin session state.');
     setIsLoggedIn(false);
     setSelectedEventId(null);
     setSelectedEventDetails(null);
     setDetailsError(null);
   }
 
-
-  // ─── API CALLS ──────────────────────────────────────────────────────────
-
   async function checkAuthStatus() {
-    console.log('App: Checking session status via GET /api/me...');
     try {
-      const response = await fetch('/api/me', {
-        credentials: 'include'
-      });
+      const response = await fetch('/api/me', { credentials: 'include' });
       const data = await response.json();
-      console.log('App: Session status received:', data);
       setIsLoggedIn(data.loggedIn === true);
     } catch (err) {
       console.error('App: Failed to check auth status:', err.message);
@@ -190,12 +192,10 @@ function App() {
   }
 
   async function fetchMockStatus() {
-    console.log('App: Fetching mock status via GET /api/mock/status...');
     try {
       const response = await fetch('/api/mock/status');
       if (response.ok) {
         const data = await response.json();
-        console.log('App: Initial mock downstream status received:', data);
         setMockHealthy(data.healthy === true);
       }
     } catch (err) {
@@ -203,24 +203,15 @@ function App() {
     }
   }
 
-  async function fetchEvents() {
-    console.log('App: Fetching events via GET /api/events...');
+  async function fetchEvents(isManual = false) {
+    if (isManual) setIsRefreshing(true);
     setEventsError(null);
 
     try {
-      const response = await fetch('/api/events', {
-        credentials: 'include'
-      });
-
-      if (!response.ok) {
-        throw new Error('Server returned error status ' + response.status);
-      }
-
+      const response = await fetch('/api/events', { credentials: 'include' });
+      if (!response.ok) throw new Error('Server returned status ' + response.status);
       const data = await response.json();
-      console.log('App: Received ' + data.length + ' events from server. Merging row by row...');
 
-      // WHAT: Merge row by row with mergeEvent instead of replacing whole state.
-      // WHY: Stops an old response from overwriting a newer live update.
       setEvents((previousEvents) => {
         let mergedList = previousEvents;
         for (let i = 0; i < data.length; i++) {
@@ -228,25 +219,26 @@ function App() {
         }
         return mergedList;
       });
+      if (isManual) {
+        showToast('Event stream synced', 'info');
+      }
     } catch (err) {
       console.error('App: Error fetching events:', err.message);
-      setEventsError('Unable to load events. Make sure the backend server is running on port 3000.');
+      setEventsError('Unable to connect to backend on port 3000.');
     } finally {
       setIsLoadingEvents(false);
+      if (isManual) setIsRefreshing(false);
     }
   }
 
   async function handleLogin(password) {
-    console.log('App: Attempting login...');
     setIsLoggingIn(true);
     setLoginError(null);
 
     try {
       const response = await fetch('/api/login', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ password })
       });
@@ -254,74 +246,55 @@ function App() {
       const data = await response.json();
 
       if (response.ok && data.loggedIn) {
-        console.log('App: Login successful.');
         setIsLoggedIn(true);
         setLoginError(null);
         setIsLoginCardOpen(false);
+        sound.playSuccess(soundEnabled);
         showToast('Signed in successfully', 'success');
       } else {
-        console.log('App: Login rejected:', data.error || 'Wrong password');
-        setLoginError(data.error === 'Wrong password' ? 'Wrong password' : (data.error || 'Login failed'));
+        setLoginError(data.error === 'Wrong password' ? 'Incorrect admin password' : (data.error || 'Login failed'));
       }
     } catch (err) {
-      console.error('App: Login network error:', err.message);
-      setLoginError('Could not reach the server. Please try again.');
+      console.error('App: Login error:', err.message);
+      setLoginError('Could not reach the server. Please check port 3000.');
     } finally {
       setIsLoggingIn(false);
     }
   }
 
   async function handleLogout() {
-    console.log('App: Logging out...');
     try {
-      await fetch('/api/logout', {
-        method: 'POST',
-        credentials: 'include'
-      });
+      await fetch('/api/logout', { method: 'POST', credentials: 'include' });
     } catch (err) {
-      console.error('App: Logout request failed:', err.message);
+      console.error('App: Logout error:', err.message);
     } finally {
       handleSignedOut();
       showToast('Signed out successfully', 'info');
-      console.log('App: User logged out.');
     }
   }
 
   async function fetchEventDetails(eventId, isBackgroundRefresh = false) {
-    if (!isLoggedInRef.current) {
-      return;
-    }
-
-    console.log('App: Fetching details for event ID:', eventId, isBackgroundRefresh ? '(background refresh)' : '');
+    if (!isLoggedInRef.current) return;
     if (!isBackgroundRefresh) {
       setIsLoadingDetails(true);
       setDetailsError(null);
     }
 
     try {
-      const response = await fetch('/api/events/' + eventId, {
-        credentials: 'include'
-      });
-
+      const response = await fetch('/api/events/' + eventId, { credentials: 'include' });
       if (response.status === 401) {
-        console.warn('App: Session expired while fetching details (401).');
         handleSignedOut();
         showToast('Session expired. Please sign in again.', 'error');
-        setDetailsError('Your session has expired. Please sign in again.');
+        setDetailsError('Your session has expired.');
         return;
       }
-
-      if (!response.ok) {
-        throw new Error('Failed to load event details (Status ' + response.status + ')');
-      }
-
+      if (!response.ok) throw new Error('Status ' + response.status);
       const data = await response.json();
-      console.log('App: Fetched full event details for:', eventId);
       setSelectedEventDetails(data);
     } catch (err) {
       console.error('App: Error loading event details:', err.message);
       if (!isBackgroundRefresh) {
-        setDetailsError('Could not load details for event ' + eventId + ': ' + err.message);
+        setDetailsError('Could not load payload: ' + err.message);
       }
     } finally {
       if (!isBackgroundRefresh) {
@@ -333,10 +306,9 @@ function App() {
   function handleSelectEvent(eventId) {
     if (!isLoggedIn) {
       setIsLoginCardOpen(true);
-      showToast('Please sign in as admin to view event payloads', 'info');
+      showToast('Please sign in as admin to inspect payloads', 'info');
       return;
     }
-    console.log('App: Selecting event ID:', eventId);
     setSelectedEventId(eventId);
     fetchEventDetails(eventId, false);
   }
@@ -347,24 +319,17 @@ function App() {
     setDetailsError(null);
   }
 
-
-  // ─── INITIALIZATION (useEffect) ──────────────────────────────────────────
-
+  // ─── INITIALIZATION ──────────────────────────────────────────────────────
   useEffect(() => {
-    console.log('App: Mounted. Initializing auth and mock downstream status...');
     checkAuthStatus();
     fetchMockStatus();
   }, []);
 
-
-  // ─── SERVER-SENT EVENTS (SSE) LIVE UPDATES ───────────────────────────────
-
+  // ─── SSE CONNECTION ──────────────────────────────────────────────────────
   useEffect(() => {
-    console.log('App: Connecting to SSE stream at /api/stream...');
     const es = new EventSource('/api/stream');
 
     es.onopen = () => {
-      console.log('App: SSE stream connected. Setting status to live and syncing event list.');
       setLiveStatus('live');
       fetchEvents();
     };
@@ -372,150 +337,167 @@ function App() {
     es.addEventListener('event-update', (event) => {
       try {
         const updatedEvent = JSON.parse(event.data);
-        console.log('App: Received SSE event-update for ID:', updatedEvent.id, 'Status:', updatedEvent.status);
 
+        // Sound chime for incoming event
+        sound.playPing(soundEnabled);
+
+        // Glow highlight row
         setRecentlyChangedId(updatedEvent.id);
-        if (highlightTimerRef.current) {
-          clearTimeout(highlightTimerRef.current);
-        }
+        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
         highlightTimerRef.current = setTimeout(() => {
           setRecentlyChangedId(null);
-        }, 1500);
+        }, 1800);
 
-        setEvents((previousEvents) => mergeEvent(previousEvents, updatedEvent));
+        setEvents((prev) => mergeEvent(prev, updatedEvent));
 
         if (isLoggedInRef.current && selectedEventIdRef.current === updatedEvent.id) {
-          console.log('App: Live update affects selected event. Refreshing details for ID:', updatedEvent.id);
           fetchEventDetails(updatedEvent.id, true);
         }
-
       } catch (err) {
-        console.error('App: Error handling event-update message:', err.message);
+        console.error('App: Error parsing event-update:', err);
       }
     });
 
     es.addEventListener('events-cleared', () => {
-      console.log('App: Received SSE events-cleared event. Resetting list and details.');
       setEvents([]);
       setSelectedEventId(null);
       setSelectedEventDetails(null);
       setDetailsError(null);
-      showToast('All events were cleared', 'info');
+      showToast('All events cleared from database', 'info');
     });
 
     es.addEventListener('mock-status', (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('App: Received SSE mock-status event:', data);
         setMockHealthy(data.healthy === true);
       } catch (err) {
-        console.error('App: Error handling mock-status message:', err.message);
+        console.error('App: Error handling mock-status:', err);
       }
     });
 
     es.onerror = () => {
-      console.warn('App: SSE stream disconnected. EventSource will automatically attempt to reconnect...');
       setLiveStatus('reconnecting');
     };
 
     return () => {
-      console.log('App: Cleaning up EventSource connection.');
-      if (highlightTimerRef.current) {
-        clearTimeout(highlightTimerRef.current);
-      }
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
       es.close();
     };
-  }, []);
+  }, [soundEnabled]);
 
-
-  // ─── COMPUTED STATS (LATEST 100 EVENTS) ──────────────────────────────────
+  // ─── COMPUTED STATS ──────────────────────────────────────────────────────
   const totalEvents = events.length;
   const completedCount = events.filter((e) => e.status === 'Completed').length;
   const failedCount = events.filter((e) => e.status === 'Failed').length;
   const receivedCount = events.filter((e) => e.status === 'Received').length;
-  const successRate =
-    totalEvents > 0
-      ? ((completedCount / totalEvents) * 100).toFixed(1) + '%'
-      : '0.0%';
+  const successRateNum = totalEvents > 0 ? ((completedCount / totalEvents) * 100).toFixed(1) : '100.0';
 
-
-  // ─── COMPUTED FILTERED EVENTS FOR TABLE ──────────────────────────────────
+  // ─── FILTERED EVENTS ─────────────────────────────────────────────────────
   const displayedEvents = events.filter((event) => {
-    if (statusFilter !== 'All' && event.status !== statusFilter) {
-      return false;
-    }
+    if (statusFilter !== 'All' && event.status !== statusFilter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase();
-      if (!event.id.toLowerCase().includes(q)) {
-        return false;
-      }
+      if (!event.id.toLowerCase().includes(q)) return false;
     }
     return true;
   });
 
-
-  // ─── WEBHOOK CURL HELPERS ────────────────────────────────────────────────
-  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const webhookUrl = `${origin}/api/webhook`;
-  const curlExample = `curl -X POST ${webhookUrl} \\
-  -H "Content-Type: application/json" \\
-  -H "x-webhook-secret: YOUR_SECRET" \\
-  -d '{"event":"order.created","amount":149.99,"customer":"cust_123"}'`;
-
-  async function handleCopyCurl() {
+  // ─── EXPORT FUNCTIONALITY ────────────────────────────────────────────────
+  function exportEventsJson() {
     try {
-      await navigator.clipboard.writeText(curlExample);
-      showToast('Copied curl command to clipboard', 'info');
-    } catch (err) {
-      console.error('Failed to copy curl:', err);
+      const blob = new Blob([JSON.stringify(events, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `eventbridge-events-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Exported events as JSON', 'success');
+    } catch {
+      showToast('Export failed', 'error');
     }
   }
 
-  async function handleCopyWebhookUrl() {
+  function exportEventsCsv() {
     try {
-      await navigator.clipboard.writeText(webhookUrl);
-      showToast('Copied webhook URL to clipboard', 'info');
-    } catch (err) {
-      console.error('Failed to copy webhook URL:', err);
+      const headers = ['id', 'status', 'attempt_count', 'created_at', 'updated_at'];
+      const rows = events.map((e) => [
+        `"${e.id}"`,
+        `"${e.status}"`,
+        e.attempt_count ?? 0,
+        `"${e.created_at || ''}"`,
+        `"${e.updated_at || ''}"`
+      ]);
+      const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `eventbridge-events-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Exported events as CSV', 'success');
+    } catch {
+      showToast('Export failed', 'error');
     }
   }
-
-
-  // ─── RENDER ──────────────────────────────────────────────────────────────
 
   return (
     <div className="dashboard-shell">
+      {/* ─── AMBIENT AURORA BACKGROUND ─── */}
+      <div className="ambient-background" aria-hidden="true">
+        <div className="aurora-glow aurora-1" />
+        <div className="aurora-glow aurora-2" />
+        <div className="aurora-glow aurora-3" />
+        <div className="ambient-grid-overlay" />
+      </div>
 
-      {/* ─── HEADER ──────────────────────────────────────────────────────── */}
+      {/* ─── 1. ULTRA-PREMIUM HEADER ─── */}
       <header className="dashboard-header">
         <div className="header-left">
-          {/* Logo Mark SVG */}
-          <div className="brand-logo" aria-hidden="true">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 11a9 9 0 0 1 9 9" />
-              <path d="M4 4a16 16 0 0 1 16 16" />
-              <circle cx="5" cy="19" r="1" fill="currentColor" />
-            </svg>
+          {/* Logo with pulsating neon core */}
+          <div className="brand-logo-wrap" aria-hidden="true">
+            <div className="brand-logo-outer">
+              <div className="brand-logo-inner">
+                <Radio size={20} className="brand-icon-radio" />
+              </div>
+            </div>
+            <span className="brand-pulse-dot" />
           </div>
-          <div>
-            <span className="brand-title">EventBridge</span>
-            <span className="brand-subtitle">Webhook Ingestion Monitor</span>
+
+          <div className="brand-info">
+            <div className="brand-title-row">
+              <span className="brand-title">EventBridge</span>
+              <span className="brand-version-tag">v2.0</span>
+            </div>
+            <span className="brand-subtitle">Real-time Webhook Ingestion Engine</span>
           </div>
         </div>
 
         <div className="header-right">
-          {/* Live / Reconnecting Status Pill */}
+          {/* Live SSE Radar Pill */}
           {liveStatus === 'live' ? (
-            <div className="status-pill status-pill-live" title="Live SSE stream connected">
+            <div className="status-pill status-pill-live" title="Live SSE connection active & streaming">
               <span className="status-dot status-dot-live" aria-hidden="true" />
-              <span>Live</span>
+              <span className="font-semibold">Live Stream</span>
             </div>
           ) : (
-            <div className="status-pill status-pill-reconnecting" title="Connecting or reconnecting to SSE stream...">
+            <div className="status-pill status-pill-reconnecting" title="Connecting to live SSE stream...">
               <span className="status-dot status-dot-reconnecting" aria-hidden="true" />
-              <span>Reconnecting</span>
+              <span>Connecting</span>
             </div>
           )}
+
+          {/* Sound Mute/Unmute Telemetry Toggle */}
+          <button
+            type="button"
+            className={`btn-icon ${soundEnabled ? 'active-audio' : ''}`}
+            onClick={toggleSound}
+            title={soundEnabled ? 'Mute audio telemetry' : 'Enable live audio chimes'}
+            aria-label="Toggle sound feedback"
+          >
+            {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </button>
 
           {/* Theme Toggle Button */}
           <button
@@ -525,54 +507,36 @@ function App() {
             title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
             aria-label={`Toggle theme (currently ${theme} mode)`}
           >
-            {theme === 'dark' ? (
-              // Sun SVG
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="5" />
-                <line x1="12" y1="1" x2="12" y2="3" />
-                <line x1="12" y1="21" x2="12" y2="23" />
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                <line x1="1" y1="12" x2="3" y2="12" />
-                <line x1="21" y1="12" x2="23" y2="12" />
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-              </svg>
-            ) : (
-              // Moon SVG
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-              </svg>
-            )}
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
           </button>
 
-          {/* Admin Panel (Dropdown menu if signed in, or read-only downstream pill if visitor) */}
+          {/* Admin Panel (Mock Status + Dropdown when logged in, or Visitor pill when logged out) */}
           <AdminPanel
             isLoggedIn={isLoggedIn}
             mockHealthy={mockHealthy}
             showToast={showToast}
             onSignedOut={handleSignedOut}
             onLogout={handleLogout}
+            soundEnabled={soundEnabled}
           />
 
-          {/* Visitor Sign In Button (when signed out) */}
+          {/* Sign In Trigger (Visitor view) */}
           {!isLoggedIn && (
             <button
               type="button"
-              className="btn btn-primary btn-sm"
+              className="btn btn-primary btn-sm btn-signin-header"
               onClick={() => setIsLoginCardOpen((prev) => !prev)}
             >
-              Sign In
+              <Zap size={14} />
+              <span>Admin Login</span>
             </button>
           )}
         </div>
       </header>
 
-
-      {/* ─── MAIN CONTENT ────────────────────────────────────────────────── */}
+      {/* ─── MAIN CONTENT ─── */}
       <main className="dashboard-main">
-
-        {/* Optional Collapsible Login Form Card */}
+        {/* Optional Collapsible Login Form */}
         {!isLoggedIn && isLoginCardOpen && (
           <section className="login-section">
             <LoginForm
@@ -584,146 +548,123 @@ function App() {
           </section>
         )}
 
-        {/* ─── 2. SEND A WEBHOOK CARD (COLLAPSIBLE) ─────────────────────── */}
-        <section className="webhook-helper-card">
-          <div
-            className="webhook-helper-header"
-            onClick={() => setIsWebhookCardOpen((prev) => !prev)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setIsWebhookCardOpen((prev) => !prev);
-              }
-            }}
-            aria-expanded={isWebhookCardOpen}
-          >
-            <div className="webhook-helper-title-group">
-              <div className="terminal-icon-badge" aria-hidden="true">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="4 17 10 11 4 5" />
-                  <line x1="12" y1="19" x2="20" y2="19" />
-                </svg>
-              </div>
-              <div>
-                <h2 className="helper-card-heading">Send a webhook</h2>
-                <p className="helper-card-subheading">
-                  POST payload to <code className="endpoint-pill">{webhookUrl}</code>
-                </p>
+        {/* ─── 2. INTERACTIVE WEBHOOK DISPATCHER STUDIO ─── */}
+        <WebhookDispatcher
+          showToast={showToast}
+          soundEnabled={soundEnabled}
+        />
+
+        {/* ─── 3. METRICS & TELEMETRY HUD ROW ─── */}
+        <section className="stats-row" aria-label="Event statistics telemetry">
+          {/* Total In View */}
+          <div className="stat-card stat-card-total">
+            <div className="stat-card-glow" />
+            <div className="stat-card-header">
+              <span className="stat-label">Total Ingested</span>
+              <div className="stat-icon-wrap icon-indigo">
+                <Activity size={15} />
               </div>
             </div>
-
-            <div className="helper-header-actions">
-              <button
-                type="button"
-                className="btn btn-secondary btn-xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleCopyWebhookUrl();
-                }}
-              >
-                Copy URL
-              </button>
-              <svg
-                className={`chevron-icon ${isWebhookCardOpen ? 'chevron-open' : ''}`}
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </div>
-          </div>
-
-          {isWebhookCardOpen && (
-            <div className="webhook-helper-body">
-              <div className="curl-box">
-                <div className="curl-box-header">
-                  <span className="curl-label">Example curl request</span>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-xs"
-                    onClick={handleCopyCurl}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                    </svg>
-                    <span>Copy curl</span>
-                  </button>
-                </div>
-                <pre className="curl-code font-mono">{curlExample}</pre>
-              </div>
-
-              <div className="webhook-notice">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
-                <span>
-                  The <code>x-webhook-secret</code> header is verified server-side. Replace <code>YOUR_SECRET</code> with your shared team key (shared separately). Real keys are never displayed here.
-                </span>
-              </div>
-            </div>
-          )}
-        </section>
-
-
-        {/* ─── 3. STATS ROW (LATEST 100 EVENTS) ─────────────────────────── */}
-        <section className="stats-row" aria-label="Event statistics (latest 100 events)">
-          <div className="stat-card">
-            <span className="stat-label">Total in view</span>
             <div className="stat-value-group">
               <span className="stat-value tabular-nums font-mono">{totalEvents}</span>
-              <span className="stat-sublabel">latest 100 events</span>
+              <span className="stat-sublabel">active stream buffer</span>
+            </div>
+            <div className="stat-spark-bar">
+              <div
+                className="stat-spark-fill fill-indigo"
+                style={{ width: `${Math.min(100, (totalEvents / 100) * 100)}%` }}
+              />
             </div>
           </div>
 
+          {/* Completed */}
           <div className="stat-card stat-card-completed">
-            <span className="stat-label">Completed</span>
+            <div className="stat-card-glow" />
+            <div className="stat-card-header">
+              <span className="stat-label">Delivered Downstream</span>
+              <div className="stat-icon-wrap icon-emerald">
+                <CheckCircle2 size={15} />
+              </div>
+            </div>
             <div className="stat-value-group">
               <span className="stat-value text-success tabular-nums font-mono">{completedCount}</span>
-              <span className="stat-sublabel">delivered downstream</span>
+              <span className="stat-sublabel">200 OK acknowledged</span>
+            </div>
+            <div className="stat-spark-bar">
+              <div
+                className="stat-spark-fill fill-emerald"
+                style={{ width: `${totalEvents > 0 ? (completedCount / totalEvents) * 100 : 0}%` }}
+              />
             </div>
           </div>
 
+          {/* Failed */}
           <div className="stat-card stat-card-failed">
-            <span className="stat-label">Failed</span>
+            <div className="stat-card-glow" />
+            <div className="stat-card-header">
+              <span className="stat-label">Failed / Retries Exhausted</span>
+              <div className="stat-icon-wrap icon-rose">
+                <AlertTriangle size={15} />
+              </div>
+            </div>
             <div className="stat-value-group">
               <span className="stat-value text-danger tabular-nums font-mono">{failedCount}</span>
-              <span className="stat-sublabel">requires attention</span>
+              <span className="stat-sublabel">requires triage</span>
+            </div>
+            <div className="stat-spark-bar">
+              <div
+                className="stat-spark-fill fill-rose"
+                style={{ width: `${totalEvents > 0 ? (failedCount / totalEvents) * 100 : 0}%` }}
+              />
             </div>
           </div>
 
+          {/* Received / In-Flight */}
           <div className="stat-card stat-card-received">
-            <span className="stat-label">Received</span>
+            <div className="stat-card-glow" />
+            <div className="stat-card-header">
+              <span className="stat-label">In Processing</span>
+              <div className="stat-icon-wrap icon-amber">
+                <Clock size={15} />
+              </div>
+            </div>
             <div className="stat-value-group">
               <span className="stat-value text-received tabular-nums font-mono">{receivedCount}</span>
-              <span className="stat-sublabel">in processing / retry</span>
+              <span className="stat-sublabel">queued or retrying</span>
+            </div>
+            <div className="stat-spark-bar">
+              <div
+                className="stat-spark-fill fill-amber"
+                style={{ width: `${totalEvents > 0 ? (receivedCount / totalEvents) * 100 : 0}%` }}
+              />
             </div>
           </div>
 
+          {/* Success Rate */}
           <div className="stat-card stat-card-rate">
-            <span className="stat-label">Success Rate</span>
+            <div className="stat-card-glow" />
+            <div className="stat-card-header">
+              <span className="stat-label">Pipeline Reliability</span>
+              <div className="stat-icon-wrap icon-cyan">
+                <TrendingUp size={15} />
+              </div>
+            </div>
             <div className="stat-value-group">
-              <span className="stat-value tabular-nums font-mono">{successRate}</span>
-              <span className="stat-sublabel">delivery efficiency</span>
+              <span className="stat-value text-cyan tabular-nums font-mono">{successRateNum}%</span>
+              <span className="stat-sublabel">delivery rate</span>
+            </div>
+            <div className="stat-spark-bar">
+              <div
+                className="stat-spark-fill fill-cyan"
+                style={{ width: `${totalEvents > 0 ? successRateNum : 100}%` }}
+              />
             </div>
           </div>
         </section>
 
-
-        {/* ─── 4. TOOLBAR (FILTER CHIPS & SEARCH BOX) ───────────────────── */}
+        {/* ─── 4. TOOLBAR & FILTER CONTROLS ─── */}
         <section className="toolbar-section">
-          {/* Filter Chips */}
+          {/* Status Filter Chips */}
           <div className="filter-chips" role="group" aria-label="Filter events by status">
             {[
               { label: 'All', count: totalEvents },
@@ -735,7 +676,10 @@ function App() {
                 key={chip.label}
                 type="button"
                 className={`filter-chip ${statusFilter === chip.label ? 'active' : ''}`}
-                onClick={() => setStatusFilter(chip.label)}
+                onClick={() => {
+                  setStatusFilter(chip.label);
+                  sound.playTap(soundEnabled);
+                }}
               >
                 <span>{chip.label}</span>
                 <span className="chip-count tabular-nums font-mono">{chip.count}</span>
@@ -743,56 +687,88 @@ function App() {
             ))}
           </div>
 
-          {/* Search Box */}
-          <div className="search-box">
-            <svg className="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              type="text"
-              className="search-input font-mono"
-              placeholder="Search by event ID..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              aria-label="Filter events by UUID"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                className="search-clear-btn"
-                onClick={() => setSearchQuery('')}
-                aria-label="Clear search"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+          <div className="toolbar-right-actions">
+            {/* Live Search Input */}
+            <div className="search-box">
+              <Search size={15} className="search-icon" aria-hidden="true" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="search-input font-mono"
+                placeholder="Search event ID or UUID... (Press / to focus)"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                aria-label="Filter events by UUID"
+              />
+              {searchQuery ? (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              ) : (
+                <span className="search-kbd-hint font-mono">/</span>
+              )}
+            </div>
+
+            {/* Refresh Button */}
+            <button
+              type="button"
+              className="btn btn-secondary btn-icon-only"
+              onClick={() => fetchEvents(true)}
+              title="Refresh events from server"
+              disabled={isRefreshing}
+            >
+              <RotateCw size={15} className={isRefreshing ? 'animate-spin' : ''} />
+            </button>
+
+            {/* Export Dropdown / Buttons */}
+            {events.length > 0 && (
+              <div className="export-btn-group">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-xs"
+                  onClick={exportEventsJson}
+                  title="Export events as JSON"
+                >
+                  <FileJson size={13} />
+                  <span>JSON</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-xs"
+                  onClick={exportEventsCsv}
+                  title="Export events as CSV"
+                >
+                  <FileSpreadsheet size={13} />
+                  <span>CSV</span>
+                </button>
+              </div>
             )}
           </div>
         </section>
 
-
-        {/* ─── SERVER ERROR BANNER (IF DOWN) ────────────────────────────── */}
+        {/* ─── SERVER ERROR BANNER ─── */}
         {eventsError && (
-          <div className="banner banner-error" role="alert">
+          <div className="banner banner-error animate-fade-in" role="alert">
             <div className="banner-content">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="8" x2="12" y2="12" />
-                <line x1="12" y1="16" x2="12.01" y2="16" />
-              </svg>
+              <AlertTriangle size={18} className="flex-shrink-0" />
               <span>{eventsError}</span>
             </div>
-            <button type="button" onClick={fetchEvents} className="btn btn-secondary btn-xs">
-              Try again
+            <button
+              type="button"
+              onClick={() => fetchEvents(true)}
+              className="btn btn-secondary btn-xs"
+            >
+              Retry Connection
             </button>
           </div>
         )}
 
-
-        {/* ─── 5. EVENTS TABLE ──────────────────────────────────────────── */}
+        {/* ─── 5. EVENTS TABLE ─── */}
         <section className="table-section">
           <EventTable
             events={displayedEvents}
@@ -802,13 +778,12 @@ function App() {
             recentlyChangedId={recentlyChangedId}
             isLoading={isLoadingEvents}
             showToast={showToast}
+            soundEnabled={soundEnabled}
           />
         </section>
-
       </main>
 
-
-      {/* ─── 6. SLIDE-OVER EVENT DETAILS DRAWER ─────────────────────────── */}
+      {/* ─── 6. SLIDE-OVER EVENT DETAILS DRAWER ─── */}
       {selectedEventId && (
         <EventDetails
           eventDetails={selectedEventDetails}
@@ -818,17 +793,24 @@ function App() {
           isLoggedIn={isLoggedIn}
           onSignedOut={handleSignedOut}
           showToast={showToast}
+          soundEnabled={soundEnabled}
         />
       )}
 
-
-      {/* ─── FOOTER ──────────────────────────────────────────────────────── */}
+      {/* ─── 7. DASHBOARD FOOTER ─── */}
       <footer className="dashboard-footer">
-        <p>EventBridge • Enterprise Webhook Ingestion Engine • Tabular Monitor</p>
+        <div className="footer-content">
+          <div className="footer-left">
+            <span className="footer-dot" />
+            <span>EventBridge Stream Engine • Enterprise Webhook Telemetry</span>
+          </div>
+          <div className="footer-right font-mono text-xs">
+            <span>Supabase Ingestion • SSE Monotonic Stream</span>
+          </div>
+        </div>
       </footer>
 
-
-      {/* ─── 8. TOAST NOTIFICATIONS CONTAINER ────────────────────────────── */}
+      {/* ─── 8. FLOATING TOAST NOTIFICATIONS ─── */}
       <div
         className="toast-container"
         aria-live="polite"
@@ -838,43 +820,24 @@ function App() {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`toast-item toast-${toast.kind || 'info'}`}
+            className={`toast-item toast-${toast.kind || 'info'} animate-slide-up`}
             role="status"
           >
-            {/* Kind Icon */}
             <div className="toast-icon-wrap" aria-hidden="true">
               {toast.kind === 'success' ? (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
+                <CheckCircle2 size={16} className="text-emerald-400" />
               ) : toast.kind === 'error' ? (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
+                <AlertTriangle size={16} className="text-rose-400" />
               ) : toast.kind === 'warning' ? (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                  <line x1="12" y1="9" x2="12" y2="13" />
-                  <line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
+                <AlertTriangle size={16} className="text-amber-400" />
               ) : (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="16" x2="12" y2="12" />
-                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                </svg>
+                <Sparkles size={16} className="text-indigo-400" />
               )}
             </div>
-
             <span className="toast-text">{toast.text}</span>
           </div>
         ))}
       </div>
-
     </div>
   );
 }
-
-export default App;

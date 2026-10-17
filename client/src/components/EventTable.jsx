@@ -1,7 +1,16 @@
 import { useState, useEffect } from 'react';
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Copy,
+  Check,
+  ChevronRight,
+  Inbox,
+  ArrowUpRight
+} from 'lucide-react';
+import { sound } from '../utils/sound';
 
-// WHAT: Format ISO timestamp to readable relative time ("just now", "2m ago", "1h ago").
-// WHY: Relative timestamps make it easy to spot recent webhook activity at a glance.
 function getRelativeTime(isoString) {
   if (!isoString) return '-';
   const timestamp = Date.parse(isoString);
@@ -18,49 +27,47 @@ function getRelativeTime(isoString) {
   return `${days}d ago`;
 }
 
-// WHAT: EventTable component rendering the webhook event timeline.
-// WHY: Presents events with truncated monospace ID, relative time, status badge (icon + dot + text),
-// and attempt count. Clickable rows open the slide-over drawer for signed-in admins.
-function EventTable({
+export default function EventTable({
   events,
   selectedEventId,
   onSelectEvent,
   isLoggedIn,
   recentlyChangedId,
   isLoading,
-  showToast
+  showToast,
+  soundEnabled,
+  onOpenDispatcher
 }) {
-  // WHAT: 30-second re-render timer to keep relative timestamps ("2m ago") fresh.
   const [, setTick] = useState(0);
+  const [copiedId, setCopiedId] = useState(null);
+
+  // Keep relative times fresh
   useEffect(() => {
     const timer = setInterval(() => {
       setTick((prev) => prev + 1);
-    }, 30000);
+    }, 15000);
     return () => clearInterval(timer);
   }, []);
 
-  // WHAT: Copy full event ID to clipboard when clicked.
   async function handleCopyId(e, id) {
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(id);
-      if (showToast) {
-        showToast('Copied event ID to clipboard', 'info');
-      }
+      setCopiedId(id);
+      sound.playTap(soundEnabled);
+      showToast?.('Copied event UUID to clipboard', 'info');
+      setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 2000);
     } catch (err) {
       console.error('Failed to copy ID:', err);
     }
   }
 
-  // WHAT: Render status badge with icon, dot, and text (never color alone, no emojis).
-  function renderBadge(status) {
+  function renderStatusBadge(status, attemptCount) {
     if (status === 'Completed') {
       return (
         <span className="badge badge-completed">
-          <span className="badge-dot" aria-hidden="true" />
-          <svg className="badge-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
+          <span className="badge-dot badge-dot-emerald" aria-hidden="true" />
+          <CheckCircle2 size={13} className="badge-icon" />
           <span>Completed</span>
         </span>
       );
@@ -68,39 +75,36 @@ function EventTable({
     if (status === 'Failed') {
       return (
         <span className="badge badge-failed">
-          <span className="badge-dot" aria-hidden="true" />
-          <svg className="badge-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
+          <span className="badge-dot badge-dot-rose" aria-hidden="true" />
+          <XCircle size={13} className="badge-icon" />
           <span>Failed</span>
         </span>
       );
     }
     return (
       <span className="badge badge-received">
-        <span className="badge-dot" aria-hidden="true" />
-        <svg className="badge-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10" />
-          <polyline points="12 6 12 12 16 14" />
-        </svg>
+        <span className="badge-dot badge-dot-amber" aria-hidden="true" />
+        <Clock size={13} className="badge-icon badge-spin-slow" />
         <span>Received</span>
+        {(attemptCount || 0) >= 1 && (
+          <span className="badge-sub-pill font-mono">retry #{attemptCount}</span>
+        )}
       </span>
     );
   }
 
-  // ─── 1. SKELETON LOADING STATE ────────────────────────────────────────────
+  // Skeleton Loading State
   if (isLoading && (!events || events.length === 0)) {
     return (
       <div className="table-card">
-        <div className="skeleton-table">
-          {[1, 2, 3, 4, 5].map((i) => (
+        <div className="table-skeleton-wrap">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
             <div key={i} className="skeleton-row">
               <div className="skeleton-cell skeleton-id" />
               <div className="skeleton-cell skeleton-time" />
               <div className="skeleton-cell skeleton-badge" />
               <div className="skeleton-cell skeleton-attempts" />
+              <div className="skeleton-cell skeleton-action" />
             </div>
           ))}
         </div>
@@ -108,123 +112,164 @@ function EventTable({
     );
   }
 
-  // ─── 2. EMPTY STATE WITH SVG ILLUSTRATION ────────────────────────────────
+  // Empty State with Action
   if (!events || events.length === 0) {
     return (
-      <div className="empty-state-card">
-        {/* Simple geometric SVG illustration of an inbox / webhook antenna */}
-        <div className="empty-state-icon" aria-hidden="true">
-          <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="12" y="18" width="40" height="34" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="4 4" />
-            <path d="M22 34L32 42L42 34" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-            <line x1="32" y1="12" x2="32" y2="28" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            <circle cx="32" cy="10" r="3" fill="currentColor" />
-          </svg>
+      <div className="empty-state-card animate-fade-in">
+        <div className="empty-radar-glow" aria-hidden="true">
+          <div className="radar-circle circle-1" />
+          <div className="radar-circle circle-2" />
+          <div className="radar-circle circle-3" />
+          <div className="empty-state-icon">
+            <Inbox size={36} className="text-indigo-400" />
+          </div>
         </div>
-        <h3 className="empty-state-title">No events yet. Send your first webhook.</h3>
+
+        <h3 className="empty-state-title">No webhook events in view</h3>
         <p className="empty-state-subtitle">
-          Use the curl command in the card above to send your first event to <code>/api/webhook</code>.
+          Waiting for incoming HTTP POST requests at <code>/api/webhook</code>. Send a test webhook
+          to observe live ingestion, automatic retries, and real-time SSE streaming.
         </p>
+
+        {onOpenDispatcher && (
+          <button
+            type="button"
+            className="btn btn-primary btn-empty-cta"
+            onClick={onOpenDispatcher}
+          >
+            <span>Open Webhook Studio</span>
+            <ArrowUpRight size={15} />
+          </button>
+        )}
       </div>
     );
   }
 
-  // ─── 3. MAIN TABLE ────────────────────────────────────────────────────────
   return (
     <div className="table-card">
       <div className="table-responsive">
         <table className="events-table">
           <thead>
             <tr>
-              <th scope="col" className="th-id">Event ID</th>
-              <th scope="col" className="th-time">Time</th>
-              <th scope="col" className="th-status">Status</th>
+              <th scope="col" className="th-id">Event Identifier</th>
+              <th scope="col" className="th-time">Timestamp</th>
+              <th scope="col" className="th-status">Delivery Status</th>
               <th scope="col" className="th-attempts">Attempts</th>
+              <th scope="col" className="th-action text-right">Payload</th>
             </tr>
           </thead>
           <tbody>
             {events.map((event) => {
               const isSelected = selectedEventId === event.id;
               const isRecentlyChanged = recentlyChangedId === event.id;
+              const isCopied = copiedId === event.id;
 
-              const rowClasses = [
-                'event-row',
-                isLoggedIn ? 'clickable-row' : '',
-                isSelected ? 'selected-row' : '',
-                isRecentlyChanged ? 'highlight-row' : ''
-              ].filter(Boolean).join(' ');
-
-              // Truncate ID: e.g. "a9ababaa...0052"
               const truncatedId =
-                event.id.length > 14
-                  ? `${event.id.slice(0, 8)}...${event.id.slice(-4)}`
+                event.id.length > 16
+                  ? `${event.id.slice(0, 8)}••••${event.id.slice(-4)}`
                   : event.id;
 
               const fullTimestamp = event.created_at
-                ? new Date(event.created_at).toLocaleString()
+                ? new Date(event.created_at).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'medium'
+                  })
+                : '-';
+
+              const exactUtc = event.created_at
+                ? new Date(event.created_at).toISOString()
                 : '-';
 
               return (
                 <tr
                   key={event.id}
-                  className={rowClasses}
+                  className={[
+                    'event-row',
+                    isLoggedIn ? 'clickable-row' : '',
+                    isSelected ? 'selected-row' : '',
+                    isRecentlyChanged ? 'highlight-row' : ''
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
                   onClick={() => {
-                    if (isLoggedIn && onSelectEvent) {
+                    if (onSelectEvent) {
                       onSelectEvent(event.id);
                     }
                   }}
-                  tabIndex={isLoggedIn ? 0 : undefined}
+                  tabIndex={0}
                   onKeyDown={(e) => {
-                    if (isLoggedIn && (e.key === 'Enter' || e.key === ' ')) {
+                    if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      onSelectEvent(event.id);
+                      onSelectEvent?.(event.id);
                     }
                   }}
                   aria-selected={isSelected}
-                  title={isLoggedIn ? 'Click to view payload in drawer' : 'Sign in to inspect payload'}
+                  title={
+                    isLoggedIn
+                      ? 'Click row to inspect payload and delivery logs'
+                      : 'Sign in to inspect full JSON payload'
+                  }
                 >
-                  {/* Event ID with copy action */}
+                  {/* Event ID column */}
                   <td className="td-id">
                     <button
                       type="button"
-                      className="id-copy-button font-mono"
+                      className={`id-copy-button font-mono ${isCopied ? 'copied' : ''}`}
                       onClick={(e) => handleCopyId(e, event.id)}
-                      title="Click to copy full ID"
+                      title={`Copy full UUID (${event.id})`}
                       aria-label={`Copy full event ID ${event.id}`}
                     >
                       <span className="id-text">{truncatedId}</span>
-                      <svg className="id-copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
+                      <span className="id-copy-icon-wrap" aria-hidden="true">
+                        {isCopied ? (
+                          <Check size={13} className="text-emerald-400" />
+                        ) : (
+                          <Copy size={13} className="text-secondary" />
+                        )}
+                      </span>
                     </button>
                   </td>
 
-                  {/* Relative Time with Full Timestamp in Tooltip */}
+                  {/* Relative & Exact Timestamp */}
                   <td className="td-time">
-                    <span
-                      className="relative-time tabular-nums"
-                      title={fullTimestamp}
+                    <div
+                      className="time-cell-wrap"
+                      title={`Local: ${fullTimestamp}\nUTC: ${exactUtc}`}
                     >
-                      {getRelativeTime(event.created_at)}
-                    </span>
-                  </td>
-
-                  {/* Status Badge & Retrying Label */}
-                  <td className="td-status">
-                    <div className="status-cell-wrapper">
-                      {renderBadge(event.status)}
-                      {event.status === 'Received' && (event.attempt_count || 0) >= 1 && (
-                        <span className="retrying-pill">Retrying...</span>
-                      )}
+                      <span className="relative-time tabular-nums">
+                        {getRelativeTime(event.created_at)}
+                      </span>
+                      <span className="exact-time-preview tabular-nums">
+                        {event.created_at ? new Date(event.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                      </span>
                     </div>
                   </td>
 
-                  {/* Attempts */}
+                  {/* Status Badge */}
+                  <td className="td-status">
+                    <div className="status-cell-wrapper">
+                      {renderStatusBadge(event.status, event.attempt_count)}
+                    </div>
+                  </td>
+
+                  {/* Attempts Column */}
                   <td className="td-attempts">
-                    <span className="attempts-count tabular-nums font-mono">
-                      {event.attempt_count ?? 0}
-                    </span>
+                    <div className="attempts-pill-wrap">
+                      <span className="attempts-count tabular-nums font-mono">
+                        {event.attempt_count ?? 0}
+                      </span>
+                      <span className="attempts-sublabel">tries</span>
+                    </div>
+                  </td>
+
+                  {/* Action / Inspect */}
+                  <td className="td-action text-right">
+                    <div className="row-action-wrap">
+                      <span className="btn-inspect-pill">
+                        <span>{isLoggedIn ? 'Inspect' : 'Details'}</span>
+                        <ChevronRight size={13} className="inspect-chevron" />
+                      </span>
+                    </div>
                   </td>
                 </tr>
               );
@@ -233,13 +278,18 @@ function EventTable({
         </table>
       </div>
 
-      {isLoggedIn && (
-        <div className="table-footer-hint">
-          <span>Click any row to open the payload inspector drawer</span>
-        </div>
-      )}
+      <div className="table-footer-hud">
+        <span className="table-count-text">
+          Showing <strong className="font-mono text-primary">{events.length}</strong> event{events.length === 1 ? '' : 's'}
+        </span>
+        <span className="table-keyboard-hint">
+          {isLoggedIn ? (
+            <>Click any row to open slide-over payload inspector</>
+          ) : (
+            <>Sign in as Admin to view payloads and trigger manual retries</>
+          )}
+        </span>
+      </div>
     </div>
   );
 }
-
-export default EventTable;

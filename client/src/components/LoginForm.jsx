@@ -1,84 +1,107 @@
 import { useState } from 'react';
+import { Lock, Eye, EyeOff, ArrowRight, AlertCircle, Sparkles, X } from 'lucide-react';
 
-// WHAT: LoginForm component for administrator authentication.
-// WHY: Clean developer-tool login card matching the design system tokens.
-function LoginForm({ onLogin, isLoading, errorMessage, onCancel }) {
+const DEMO_PASSWORD = 'recruitingmewasyoursmartestdecision';
+
+export default function LoginForm({ onLogin, isLoading, errorMessage, onCancel }) {
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   function handleSubmit(event) {
     event.preventDefault();
-    if (!password.trim() || isLoading) {
-      return;
-    }
-    console.log('LoginForm: Submitting admin password...');
+    if (!password.trim() || isLoading) return;
     onLogin(password);
   }
 
+  function handleUseDemoPassword() {
+    setPassword(DEMO_PASSWORD);
+  }
+
   return (
-    <div className="login-card">
+    <div className="login-card animate-scale-in">
       <div className="login-header">
-        <div className="login-header-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
+        <div className="login-header-left">
+          <div className="login-header-icon" aria-hidden="true">
+            <Lock size={18} className="text-indigo-400" />
+          </div>
+          <div>
+            <h3 className="login-title">Administrator Authentication</h3>
+            <p className="login-subtitle">
+              Sign in to inspect full payloads, examine failure logs, and trigger manual retries.
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 className="login-title">Admin Authentication</h3>
-          <p className="login-subtitle">Sign in to inspect event payloads, failure logs, and trigger retries.</p>
-        </div>
+
+        {onCancel && (
+          <button
+            type="button"
+            className="btn-icon"
+            onClick={onCancel}
+            disabled={isLoading}
+            aria-label="Close login dialog"
+          >
+            <X size={16} />
+          </button>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} className="login-form">
-        <div className="login-input-group">
-          <label htmlFor="admin-password-input" className="form-label visually-hidden">
-            Admin Password
-          </label>
-          <input
-            id="admin-password-input"
-            type="password"
-            className="form-input password-input font-mono"
-            placeholder="Enter admin password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={isLoading}
-            autoComplete="current-password"
-            autoFocus
-          />
+        <div className="login-input-row">
+          <div className="password-input-wrap">
+            <input
+              id="admin-password-input"
+              type={showPassword ? 'text' : 'password'}
+              className="form-input password-input font-mono"
+              placeholder="Enter administrator password..."
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={isLoading}
+              autoComplete="current-password"
+              autoFocus
+            />
+            <button
+              type="button"
+              className="btn-input-eye"
+              onClick={() => setShowPassword((p) => !p)}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              tabIndex={-1}
+            >
+              {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
 
           <button
             type="submit"
-            className="btn btn-primary"
+            className="btn btn-primary btn-login-submit"
             disabled={isLoading || !password.trim()}
           >
-            {isLoading ? 'Signing In...' : 'Sign In'}
+            <span>{isLoading ? 'Verifying...' : 'Sign In'}</span>
+            <ArrowRight size={15} />
           </button>
+        </div>
 
-          {onCancel && (
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={onCancel}
-              disabled={isLoading}
-            >
-              Cancel
-            </button>
-          )}
+        {/* Quick Demo Helper Hint */}
+        <div className="login-helper-row">
+          <span className="demo-hint-text">
+            Testing environment?
+          </span>
+          <button
+            type="button"
+            className="btn-demo-fill"
+            onClick={handleUseDemoPassword}
+          >
+            <Sparkles size={11} className="inline mr-1 text-indigo-400" />
+            Auto-fill demo password
+          </button>
         </div>
       </form>
 
       {errorMessage && (
-        <div className="form-error-alert" role="alert">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
+        <div className="form-error-alert animate-fade-in" role="alert">
+          <AlertCircle size={15} className="flex-shrink-0 text-rose-400" />
           <span>{errorMessage}</span>
         </div>
       )}
     </div>
   );
 }
-
-export default LoginForm;
