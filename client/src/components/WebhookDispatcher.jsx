@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Terminal,
@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { sound } from '../utils/sound';
 
-const DEFAULT_SECRET = 'd70b709b2e394ff9e48513dcb704480141753957d2d3f949ca5156798367947d';
 
 const PRESETS = [
   {
@@ -94,15 +93,30 @@ const PRESETS = [
   }
 ];
 
-export default function WebhookDispatcher({ showToast, soundEnabled, isLoggedIn }) {
+export default function WebhookDispatcher({
+  showToast,
+  soundEnabled,
+  isLoggedIn,
+  adminWebhookSecret,
+  onRequestLogin
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('dispatcher'); // 'dispatcher' | 'curl' | 'js' | 'python'
   const [selectedPreset, setSelectedPreset] = useState('payment');
   const [jsonText, setJsonText] = useState(() =>
     JSON.stringify(PRESETS[0].payload, null, 2)
   );
-  const [secret, setSecret] = useState(DEFAULT_SECRET);
+  const [secret, setSecret] = useState(adminWebhookSecret || '');
   const [showSecret, setShowSecret] = useState(false);
+
+  useEffect(() => {
+    if (isLoggedIn && adminWebhookSecret) {
+      setSecret(adminWebhookSecret);
+    } else if (!isLoggedIn) {
+      setSecret('');
+      setShowSecret(false);
+    }
+  }, [isLoggedIn, adminWebhookSecret]);
   const [customKey, setCustomKey] = useState('');
   const [isSending, setIsSending] = useState(false);
   const isSendingRef = useRef(false);
@@ -172,13 +186,24 @@ export default function WebhookDispatcher({ showToast, soundEnabled, isLoggedIn 
       return;
     }
 
+    if (!isLoggedIn) {
+      showToast('Administrator login required to dispatch webhooks with secret verification', 'info');
+      onRequestLogin?.();
+      return;
+    }
+
+    if (!secret.trim()) {
+      showToast('Webhook secret is required to dispatch', 'error');
+      return;
+    }
+
     isSendingRef.current = true;
     setIsSending(true);
     setLastResult(null);
 
     const headers = {
       'Content-Type': 'application/json',
-      'x-webhook-secret': isLoggedIn ? secret.trim() : DEFAULT_SECRET
+      'x-webhook-secret': secret.trim()
     };
     if (customKey.trim()) {
       headers['idempotency-key'] = customKey.trim();
@@ -245,7 +270,7 @@ export default function WebhookDispatcher({ showToast, soundEnabled, isLoggedIn 
   }
 
   // Code generator (masks secret for visitors)
-  const cleanSecret = isLoggedIn ? (secret.trim() || 'YOUR_SECRET') : 'YOUR_WEBHOOK_SECRET';
+  const cleanSecret = (isLoggedIn && secret.trim()) ? secret.trim() : 'YOUR_WEBHOOK_SECRET';
   const curlCode = `curl -X POST ${webhookUrl} \\
   -H "Content-Type: application/json" \\
   -H "x-webhook-secret: ${cleanSecret}" ${customKey ? `\\\n  -H "idempotency-key: ${customKey}" ` : ''}\\
@@ -461,19 +486,19 @@ print(response.status_code, response.json())`;
                         id="secret-input"
                         type={isLoggedIn && showSecret ? 'text' : 'password'}
                         className={`form-input font-mono input-sm ${!isLoggedIn ? 'input-locked' : ''}`}
-                        value={isLoggedIn ? secret : '••••••••••••••••••••••••••••••••'}
+                        value={isLoggedIn ? secret : ''}
                         onChange={(e) => {
                           if (isLoggedIn) setSecret(e.target.value);
                         }}
                         readOnly={!isLoggedIn}
                         disabled={!isLoggedIn}
-                        placeholder={isLoggedIn ? 'Enter webhook secret...' : 'Hidden (Admin only)'}
+                        placeholder={isLoggedIn ? 'Enter webhook secret...' : 'Secret protected • Admin access required'}
                       />
                     </div>
                     <span className="field-hint">
                       {isLoggedIn
-                        ? 'Verified server-side via timingSafeEqual. Configured secret will be sent in headers.'
-                        : 'Webhook secret is protected and only visible to administrators. Sign in as admin to view or modify.'}
+                        ? 'Loaded securely from server session. Verified server-side via timingSafeEqual.'
+                        : 'Secret is never loaded into browser memory for public visitors. Sign in as admin to view.'}
                     </span>
                   </div>
 
@@ -507,6 +532,11 @@ print(response.status_code, response.json())`;
                         <>
                           <div className="spinner-sm" aria-hidden="true" />
                           <span>Streaming Ingestion...</span>
+                        </>
+                      ) : !isLoggedIn ? (
+                        <>
+                          <Lock size={14} />
+                          <span>Sign in as Admin to Dispatch</span>
                         </>
                       ) : (
                         <>

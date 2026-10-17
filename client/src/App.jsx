@@ -124,6 +124,7 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState(null);
   const [isLoginCardOpen, setIsLoginCardOpen] = useState(false);
+  const [adminWebhookSecret, setAdminWebhookSecret] = useState('');
 
   const [liveStatus, setLiveStatus] = useState('connecting');
   const [recentlyChangedId, setRecentlyChangedId] = useState(null);
@@ -173,6 +174,7 @@ export default function App() {
   // ─── AUTHENTICATION HELPERS ──────────────────────────────────────────────
   function handleSignedOut() {
     setIsLoggedIn(false);
+    setAdminWebhookSecret('');
     setSelectedEventId(null);
     setSelectedEventDetails(null);
     setDetailsError(null);
@@ -182,10 +184,17 @@ export default function App() {
     try {
       const response = await fetch('/api/me', { credentials: 'include' });
       const data = await response.json();
-      setIsLoggedIn(data.loggedIn === true);
+      const loggedIn = data.loggedIn === true;
+      setIsLoggedIn(loggedIn);
+      if (loggedIn && data.webhookSecret) {
+        setAdminWebhookSecret(data.webhookSecret);
+      } else {
+        setAdminWebhookSecret('');
+      }
     } catch (err) {
       console.error('App: Failed to check auth status:', err.message);
       setIsLoggedIn(false);
+      setAdminWebhookSecret('');
     }
   }
 
@@ -240,6 +249,9 @@ export default function App() {
 
       if (response.ok && data.loggedIn) {
         setIsLoggedIn(true);
+        if (data.webhookSecret) {
+          setAdminWebhookSecret(data.webhookSecret);
+        }
         setLoginError(null);
         setIsLoginCardOpen(false);
         sound.playSuccess(soundEnabled);
@@ -546,6 +558,8 @@ export default function App() {
           showToast={showToast}
           soundEnabled={soundEnabled}
           isLoggedIn={isLoggedIn}
+          adminWebhookSecret={adminWebhookSecret}
+          onRequestLogin={() => setIsLoginCardOpen(true)}
         />
 
         {/* ─── 3. METRICS & TELEMETRY HUD ROW ─── */}

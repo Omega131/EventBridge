@@ -155,7 +155,10 @@ router.post('/login', async (req, res) => {
     });
 
     console.log('Admin login successful. Session cookie set.');
-    return res.status(200).json({ loggedIn: true });
+    return res.status(200).json({
+      loggedIn: true,
+      webhookSecret: process.env.WEBHOOK_SECRET
+    });
   } catch (err) {
     console.error('Login error while generating session token:', err.message);
     return res.status(500).json({
@@ -204,7 +207,10 @@ router.get('/me', async (req, res) => {
   try {
     const valid = await isTokenValid(token);
     if (valid) {
-      return res.status(200).json({ loggedIn: true });
+      return res.status(200).json({
+        loggedIn: true,
+        webhookSecret: process.env.WEBHOOK_SECRET
+      });
     } else {
       return res.status(200).json({ loggedIn: false });
     }
