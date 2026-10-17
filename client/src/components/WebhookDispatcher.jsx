@@ -124,8 +124,8 @@ export default function WebhookDispatcher({
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-  const webhookUrl = `${origin}/api/webhook`;
+  const origin = typeof window !== 'undefined' && window.location.origin ? window.location.origin : '';
+  const webhookUrl = origin ? `${origin}/api/webhook` : '/api/webhook';
 
   function handleSelectPreset(preset) {
     setSelectedPreset(preset.id);
@@ -262,7 +262,7 @@ export default function WebhookDispatcher({
         status: 0,
         message: 'Network error reaching backend server'
       });
-      showToast('Could not reach backend server on port 3000', 'error');
+      showToast('Could not reach backend server', 'error');
     } finally {
       isSendingRef.current = false;
       setIsSending(false);

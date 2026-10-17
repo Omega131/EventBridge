@@ -48,7 +48,8 @@ npm run dev
 
 | Method | Route | Description | Protected |
 |--------|-------|-------------|-----------|
-| GET | `/api/health` | Check that the server is running | No |
+| GET | `/api/health` | Check that the server is running (does not touch database) | No |
+| GET | `/api/keepalive` | Uptime check with lightweight database read | No |
 | POST | `/api/webhook` | Receive, store, and trigger event pipeline | Yes (`x-webhook-secret`) |
 | POST | `/api/mock-downstream` | Mock destination service (200 OK or 503 error) | No |
 | POST | `/api/mock-downstream/mode` | Toggle mock service health (`{"healthy": true\|false}`) | Yes (`x-webhook-secret`) |
@@ -255,4 +256,44 @@ Even though JWT session tokens are stateless, EventBridge supports instant globa
   # Returns: {"loggedIn": false}
   ```
   This increments the global `auth_version` stored in the database. Any token created prior to this call carries an older version number and will be immediately rejected on its next request.
+```
 
+## Deployment (Render + Supabase)
+
+EventBridge can be deployed as **ONE unified service** on [Render](https://render.com). The Express backend serves both the API endpoints under `/api/*` and the compiled React production application from `client/dist`.
+
+### 1. Build Command
+```bash
+npm run build
+```
+*(Runs root `package.json` build script: installs client dependencies, compiles the Vite production bundle into `client/dist`, and installs server dependencies).*
+
+### 2. Start Command
+```bash
+npm start
+```
+*(Runs `node server/index.js`, binding to `0.0.0.0:$PORT` to serve both the API and the React single-page application).*
+
+### 3. Environment Variables
+
+Configure the following environment variable names in your Render dashboard under **Environment**:
+
+| Variable Name | Required | Description |
+|---|---|---|
+| `PORT` | Auto-provided | The port assigned dynamically by Render (defaults to `3000` locally). |
+| `NODE_ENV` | Yes | Set to `production` (enables secure HTTPS session cookies). |
+| `SUPABASE_URL` | Yes | Your Supabase project URL (e.g. `https://xyzcompany.supabase.co`). |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Your Supabase service role secret key. |
+| `WEBHOOK_SECRET` | Yes | Secret string used to verify incoming `x-webhook-secret` headers. |
+| `ADMIN_PASSWORD` | Yes | Secret password required to authenticate to the admin dashboard. |
+| `SESSION_SECRET` | Yes | Secret key used to sign and verify JWT authentication cookies. |
+| `DOWNSTREAM_URL` | Optional | External downstream target URL. If empty or omitted, defaults to `http://127.0.0.1:$PORT/api/mock-downstream`. |
+
+### 4. Uptime Keepalive Monitor
+
+Render free instances spin down after 15 minutes of inactivity, and inactive Supabase free projects pause after several days. To keep both your Render web service and Supabase database continuously active, configure a free periodic monitor (such as [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) to call:
+
+```
+GET https://<your-app-name>.onrender.com/api/keepalive
+```
+Interval: Every 5 to 10 minutes. This endpoint executes a tiny read against the database (`SELECT id FROM events LIMIT 1`) and replies `200 {"ok": true}` without polluting server logs.

@@ -14,6 +14,12 @@ const express = require('express');
 // which our authentication system needs to read the "eventbridge_token" session cookie.
 const cookieParser = require('cookie-parser');
 
+// WHAT: Import path and fs built-in Node.js modules.
+// WHY: We need path to safely resolve directories across different operating systems,
+// and fs to verify whether the client/dist production build folder exists before serving it.
+const path = require('path');
+const fs = require('fs');
+
 // WHAT: Import the Supabase connection test function from our supabase.js file.
 // WHY: We want to test our database connection right when the backend server launches.
 const { testSupabaseConnection } = require('./supabase');
@@ -127,16 +133,68 @@ app.post('/api/mock-downstream/mode', handleMockDownstreamMode);
 app.use('/api', apiRoutes);
 
 
+
+// ─── UNKNOWN /api ROUTE FALLBACK ──────────────────────────────────────────
+// WHAT: Catch-all fallback handler for any unrecognized /api endpoints.
+// WHY: If a request path begins with /api but did not match any of the registered routes above,
+// reply with HTTP 404 and a JSON object {"error": "Not found"}. This ensures API callers receive
+// clean structured JSON error responses rather than an HTML 404 page.
+app.all('/api/*', (req, res) => {
+  console.log('Received request for unknown API route:', req.method, req.originalUrl);
+  res.status(404).json({ error: 'Not found' });
+});
+
+
+// ─── SERVE STATIC FRONTEND (REACT CLIENT) ─────────────────────────────────
+// WHAT: Build the absolute path to the client/dist folder using path.join and __dirname.
+// WHY: Building the path with the path module ensures it works reliably regardless of what
+// current working directory the server was launched from (e.g. from root or from server/).
+const clientDistPath = path.join(__dirname, '../client/dist');
+
+// WHAT: Check if the client/dist directory exists on disk before serving.
+// WHY: If someone runs the server in development without building the client first,
+// we log a clear message and DO NOT crash the server.
+if (fs.existsSync(clientDistPath)) {
+  console.log('Serving built frontend static files from:', clientDistPath);
+  app.use(express.static(clientDistPath));
+} else {
+  console.log('client/dist not found, run the build');
+}
+
+
+// ─── CLIENT SPA ROUTING FALLBACK ──────────────────────────────────────────
+// WHAT: For any other GET request that does NOT start with /api/, send client/dist/index.html.
+// WHY: Single Page Applications (SPAs) manage routing on the client side. Sending index.html
+// allows the React application to load and display the correct view when a user refreshes or bookmarks a URL.
+// We use the regular expression /^\/(?!api\/).*/ and NOT a "*" string, because the "*" wildcard
+// pattern breaks in newer versions of Express.
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  const indexPath = path.join(clientDistPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send('client/dist not found, run the build');
+  }
+});
+
+
 // ─── START THE SERVER ─────────────────────────────────────────────────────
 
 // WHAT: Determine which port the server should listen on.
+// WHY: Render provides the listening port in process.env.PORT. Defaults to 3000 locally.
 const PORT = process.env.PORT || 3000;
 
+// WHAT: Bind the server to host "0.0.0.0".
+// WHY: Binding to "0.0.0.0" allows Render's reverse proxy router to route external traffic to this process.
+const HOST = '0.0.0.0';
+
 // WHAT: Start the Express server and begin listening for incoming network requests.
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log('====================================================');
   console.log('EventBridge Express server is running on port ' + PORT);
+  console.log('Bound to host:   ' + HOST);
   console.log('Health check:    http://localhost:' + PORT + '/api/health');
+  console.log('Keepalive check: http://localhost:' + PORT + '/api/keepalive');
   console.log('Webhook route:   http://localhost:' + PORT + '/api/webhook');
   console.log('Mock downstream: http://localhost:' + PORT + '/api/mock-downstream');
   console.log('Mock mode route: http://localhost:' + PORT + '/api/mock-downstream/mode');
@@ -144,6 +202,20 @@ app.listen(PORT, () => {
   console.log('Events route:    http://localhost:' + PORT + '/api/events');
   console.log('SSE Stream:      http://localhost:' + PORT + '/api/stream');
   console.log('====================================================');
+
+  // ─── STARTUP ENVIRONMENT CHECK ──────────────────────────────────────────
+  // WHAT: Log an Environment check showing whether each required variable is set.
+  // WHY: Verifies that all required configuration is present on Render at startup.
+  // CRITICAL RULE: Print names only with true or false for "is it set". NEVER print any value.
+  console.log('--- Environment check ---');
+  console.log('PORT is set:', Boolean(process.env.PORT));
+  console.log('SUPABASE_URL is set:', Boolean(process.env.SUPABASE_URL));
+  console.log('SUPABASE_SERVICE_ROLE_KEY is set:', Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY));
+  console.log('WEBHOOK_SECRET is set:', Boolean(process.env.WEBHOOK_SECRET));
+  console.log('ADMIN_PASSWORD is set:', Boolean(process.env.ADMIN_PASSWORD));
+  console.log('SESSION_SECRET is set:', Boolean(process.env.SESSION_SECRET));
+  console.log('DOWNSTREAM_URL is set:', Boolean(process.env.DOWNSTREAM_URL));
+  console.log('-------------------------');
 
   // WHAT: Test the Supabase connection once when the server starts.
   // WHY: Immediately tells the developer whether the database configuration is working.

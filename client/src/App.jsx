@@ -227,7 +227,7 @@ export default function App() {
       });
     } catch (err) {
       console.error('App: Error fetching events:', err.message);
-      setEventsError('Unable to connect to backend on port 3000.');
+      setEventsError('Unable to connect to backend server.');
     } finally {
       setIsLoadingEvents(false);
     }
@@ -261,7 +261,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('App: Login error:', err.message);
-      setLoginError('Could not reach the server. Please check port 3000.');
+      setLoginError('Could not reach the server. Please check server status.');
     } finally {
       setIsLoggingIn(false);
     }

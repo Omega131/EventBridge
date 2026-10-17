@@ -44,6 +44,32 @@ const { addClient, removeClient, broadcast, publishEvent } = require('./sse');
 const { runPipeline } = require('./pipeline');
 
 
+// ─── ROUTE: GET /api/keepalive (PUBLIC KEEPALIVE ENDPOINT) ────────────────
+// WHAT: Run one tiny query against the database (SELECT id FROM events LIMIT 1).
+// WHY: An uptime monitor (such as UptimeRobot or Cron-job.org) will call this endpoint
+// periodically so both the Render host and the Supabase database stay awake and active.
+// We do NOT log successful calls because this endpoint will be called very frequently.
+// If the database returns an error, we log the error and reply with HTTP 500 {"ok": false}.
+router.get('/keepalive', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('events')
+      .select('id')
+      .limit(1);
+
+    if (error) {
+      console.error('Keepalive error: Supabase query failed:', error.message);
+      return res.status(500).json({ ok: false });
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Keepalive error: Unexpected exception during database check:', err.message);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+
 // ─── ROUTE: GET /api/stream (PUBLIC SSE STREAM) ───────────────────────────
 // WHAT: Provide a Server-Sent Events (SSE) stream for real-time dashboard updates.
 // WHY:  Allows any visitor (public, no login required) to receive live updates
