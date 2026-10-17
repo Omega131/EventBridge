@@ -10,11 +10,10 @@
 - [Credentials for Reviewer and Evaluation](#credentials-for-reviewer-and-evaluation)
 - [The Problem](#the-problem)
 - [Our Solution](#our-solution)
+- [What Gets Stored on the Server (Database Schema)](#what-gets-stored-on-the-server-database-schema)
+- [Design Decisions & Technical Trade-offs](#design-decisions--technical-trade-offs)
 - [How a Reviewer Can Test It](#how-a-reviewer-can-test-it)
-- [Architecture & Event Lifecycle](#architecture--event-lifecycle)
 - [Tech Stack and Rationale](#tech-stack-and-rationale)
-- [Design Decisions](#design-decisions)
-- [Database Schema (What Gets Stored on the Server)](#database-schema-what-gets-stored-on-the-server)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
 - [Local Setup Guide](#local-setup-guide)
@@ -29,7 +28,7 @@
 
 ---
 
-# Architecture Diagram
+## Architecture Diagram
 
 ```mermaid
 flowchart TD
@@ -68,18 +67,16 @@ The following credentials are configured for evaluation and grading:
 - **Administrator Password**: `recruitingmewasyoursmartestdecision`
 - **Deployed Production Webhook Secret**: `a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2`
 
-These credentials are also shared through the project submission form.
-
 ---
 
 ## The Problem
 
 Modern distributed applications rely heavily on webhooks for asynchronous integration across payment processors, version control, and SaaS platforms. Traditional naive webhook receivers face recurring operational failures:
 
-- **Missing Idempotency**: Network retries from upstream webhook providers cause identical payloads to execute multiple times, creating duplicate invoices, duplicate orders, or corrupted account states.
+- **Missing Idempotency**: Network retries from upstream providers cause identical payloads to execute multiple times, creating duplicate invoices, duplicate orders, or corrupted account states.
 - **Vulnerability to Timing Attacks**: Naive string comparisons on incoming authentication tokens expose secret lengths and character prefixes through execution time differences.
 - **Blocking Ingestion**: Calling downstream destination APIs synchronously during webhook receipt causes timeouts on the sender side and degrades throughput.
-- **Silent Abandonment on Crashes**: Background promises running in Node memory are terminated when servers reboot or restart, leaving in-flight events stuck in intermediate states indefinitely.
+- **Silent Abandonment on Crashes**: Background promises running in Node memory terminate when servers reboot or restart, leaving in-flight events stuck in intermediate states indefinitely.
 - **Race Conditions on Manual Retries**: When multiple administrators or automated scripts trigger retries simultaneously, naive select-then-update logic allows duplicate delivery runs to execute in parallel.
 - **Payload Data Leakage**: Exposing raw webhook bodies over public telemetry streams leaks customer PII and authorization tokens to unauthorized observers.
 
@@ -89,23 +86,54 @@ Modern distributed applications rely heavily on webhooks for asynchronous integr
 
 EventBridge resolves these challenges through a hardened ingestion and telemetry architecture:
 
-1. **Fast, Authenticated Ingestion with Idempotency**  
-   Buffers incoming raw request bytes before JSON parsing, executes constant-time secret verification via `crypto.timingSafeEqual`, resolves a unique idempotency key (header or SHA-256 body hash), and performs an insert-then-catch operation against a PostgreSQL unique constraint. New events receive `201 Created`; duplicate deliveries receive `200 OK` and skip downstream dispatch.
+1. **Authenticated Ingestion with Deduplication**: Validates raw request bytes before JSON parsing using constant-time comparisons, resolves an idempotency signature, and enforces database uniqueness constraints. New events return `201 Created`; duplicates return `200 OK` and skip downstream delivery.
+2. **Decoupled Asynchronous Delivery Pipeline**: Ingestion responds immediately upon database persistence, offloading delivery to a background worker with a strict 5-second `AbortSignal` timeout.
+3. **Atomic Conditional Retry Engine**: Single-statement SQL updates ensure only one concurrent worker claims a failed event. Synchronous frontend ref locks prevent rapid double-clicks while remaining immediately re-usable upon completion.
+4. **Real-Time Telemetry via Server-Sent Events (SSE)**: Monotonic state transitions (`Received` -> `Completed` / `Failed`) stream live to connected browsers using unidirectional HTTP `text/event-stream` with 25-second heartbeat keepalives.
+5. **Stale In-Flight Sweeper**: A recurring background sweeper identifies events left in `Received` status for over 60 seconds due to process restarts and transitions them to `Failed` for safe administrator inspection.
+6. **Role-Protected Telemetry Projections**: Public views display status badges, timestamps, and attempt counts; sensitive raw payloads and failure diagnostics are restricted to authenticated admin sessions.
 
-2. **Decoupled Asynchronous Delivery Pipeline**  
-   The HTTP ingestion endpoint returns immediately upon database persistence. A background delivery worker (`pipeline.js`) loads the stored payload, forwards it to the downstream endpoint with a strict 5-second `AbortSignal` timeout, records delivery attempts, and updates the database record to `Completed` or `Failed` without throwing unhandled exceptions.
+---
 
-3. **Atomic Conditional Retry Engine with Double-Click Protection**  
-   Administrative retries execute a single conditional SQL statement (`UPDATE events SET status = 'Received' WHERE id = :id AND status = 'Failed'`). PostgreSQL row locks guarantee that only one concurrent caller claims the event. In the frontend, synchronous ref locks (`isRetryingRef`) prevent rapid double-clicks, and locks reset cleanly upon completion so failed events can be retried immediately.
+## What Gets Stored on the Server (Database Schema)
 
-4. **Real-Time Telemetry via Server-Sent Events (SSE)**  
-   The backend exposes `GET /api/stream` using the Server-Sent Events standard (`text/event-stream`). Active browser connections receive real-time monotonic state updates as events are received, completed, failed, or retried, maintained with 25-second heartbeat comment pings.
+EventBridge stores only operational metadata and incoming payloads across two tables in Supabase PostgreSQL:
 
-5. **Stale In-Flight Sweeper**  
-   A background process (`sweeper.js`) inspects the database every 30 seconds for events left in `Received` state for longer than 60 seconds (abandoned by process restarts). Swept events are transitioned to `Failed` with diagnostic error messaging rather than being automatically re-delivered, preventing duplicate side effects and allowing administrator inspection.
+### 1. `events` Table
 
-6. **Privacy-Preserving Public Visibility with Role-Protected Payloads**  
-   Public visitors can monitor event throughput, status badges, timestamps, and attempt counts. Raw payload contents and downstream error diagnostics are strictly excluded from public APIs and SSE streams, accessible only through authenticated endpoints protected by `httpOnly`, version-validated JWT cookies.
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | UUID | PRIMARY KEY | Unique event identifier (`gen_random_uuid()`) |
+| `idempotency_key` | TEXT | UNIQUE, NOT NULL | Deduplication key (from header or SHA-256 body hash) |
+| `payload` | JSONB | NOT NULL | Raw ingested webhook payload |
+| `status` | TEXT | NOT NULL | Current lifecycle state (`'Received'`, `'Completed'`, `'Failed'`) |
+| `attempt_count` | INTEGER | NOT NULL | Total delivery attempts (defaults to `0`) |
+| `failure_reason` | TEXT | NULLABLE | Downstream error message or timeout trace |
+| `created_at` | TIMESTAMPTZ | NOT NULL | Initial ingestion timestamp (`now()`) |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Timestamp of last state change (`now()`) |
+
+- **Indexes**:
+  - `idx_events_created_at` on `created_at DESC` (fast paginated telemetry listing)
+  - `idx_events_status_updated` on `(status, updated_at)` (fast stale-event sweep queries)
+- **Privacy Policy**: The raw `payload` and `failure_reason` columns are omitted from public API queries and SSE events.
+
+### 2. `settings` Table
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `key` | TEXT | PRIMARY KEY | Configuration key name (`mock_healthy`, `auth_version`) |
+| `value` | TEXT | NOT NULL | Serialized setting value |
+| `updated_at` | TIMESTAMPTZ | NOT NULL | Last modification timestamp |
+
+---
+
+## Design Decisions & Technical Trade-offs
+
+- **Insert-Then-Catch vs Read-Then-Write**: Rather than querying before inserting (which creates a race condition window under concurrent requests), the ingestion route performs a direct `INSERT`. PostgreSQL enforces the unique constraint on `idempotency_key`. Collisions trigger error `23505`, which is caught to update timestamps and return `200 OK` with `duplicate: true`.
+- **Atomic Conditional UPDATE vs Application Locking**: To eliminate duplicate parallel retries without distributed lock infrastructure, the server runs `UPDATE events SET status = 'Received', updated_at = now() WHERE id = :id AND status = 'Failed' RETURNING *`. PostgreSQL row locks ensure exactly one caller wins the claim; concurrent callers receive an immediate `409 Conflict`.
+- **Constant-Time Verification vs String Comparison**: JavaScript string equality (`===`) exits early on the first mismatched byte, creating a timing attack vulnerability. We hash both strings with SHA-256 into 32-byte buffers and evaluate with `crypto.timingSafeEqual` for constant execution time.
+- **Versioned JWT Cookies vs Database Blacklists**: Admin sessions use `httpOnly`, `sameSite: 'strict'`, `secure` cookies containing an `auth_version` claim. Global revocation ("Sign Out Everywhere") increments a single integer in the `settings` table, instantly invalidating all issued tokens across devices without tracking per-token blacklists.
+- **Server-Sent Events vs WebSockets**: The dashboard requires only one-way server-to-browser telemetry. SSE operates over standard HTTP, traverses proxies without protocol upgrade negotiation, and includes built-in browser reconnection logic.
 
 ---
 
@@ -121,8 +149,6 @@ export SECRET="a3aa976dcbfb608f8a3e0d182cc40967548434e40a8f4c2c51b0f411ecaac7c2"
 ```
 
 ### 1. Ingest a Valid Webhook
-
-Dispatch a valid webhook payload with the shared secret header:
 
 ```bash
 curl -i -X POST "$BASE_URL/api/webhook" \
@@ -142,8 +168,6 @@ Expected response: `HTTP/1.1 201 Created`
 
 ### 2. Send the Same Webhook Again (Deduplication Check)
 
-Send the exact same payload a second time without an explicit idempotency key:
-
 ```bash
 curl -i -X POST "$BASE_URL/api/webhook" \
   -H "Content-Type: application/json" \
@@ -159,8 +183,6 @@ Expected response: `HTTP/1.1 200 OK`
   "duplicate": true
 }
 ```
-
-PostgreSQL detects the duplicate hash, updates the record timestamp, and skips downstream delivery.
 
 ### 3. Send Request with an Invalid Secret (401 Check)
 
@@ -180,7 +202,7 @@ Expected response: `HTTP/1.1 401 Unauthorized`
 
 ### 4. Watch the Dashboard
 
-Open `$BASE_URL` in a browser. Events appear in real time via Server-Sent Events without manual page refreshes.
+Open `$BASE_URL` in a browser. Ingested events appear in real time via Server-Sent Events without manual page refreshes.
 
 ### 5. Sign In as Administrator
 
@@ -201,8 +223,6 @@ Expected response: `HTTP/1.1 200 OK`
 ```
 
 ### 6. Turn Mock Downstream Off (Simulate Outage)
-
-Toggle the downstream receiver to outage mode:
 
 ```bash
 curl -i -b cookies.txt -X POST "$BASE_URL/api/mock/mode" \
@@ -228,21 +248,17 @@ curl -i -X POST "$BASE_URL/api/webhook" \
   -d '{"event": "payment.failed_test", "timestamp": "'$(date +%s)'"}'
 ```
 
-Ingestion responds with `201 Created`. The delivery pipeline receives `503 Service Unavailable`, transitions status to `Failed`, and records the failure reason.
+Ingestion returns `201 Created`. The background delivery pipeline receives `503 Service Unavailable`, transitions status to `Failed`, and logs the failure trace.
 
 ### 8. Press Retry to Recover the Event
 
-In the browser drawer (or via curl), turn the mock downstream back on:
+Restore downstream health and trigger an immediate retry:
 
 ```bash
 curl -i -b cookies.txt -X POST "$BASE_URL/api/mock/mode" \
   -H "Content-Type: application/json" \
   -d '{"healthy": true}'
-```
 
-Trigger an immediate retry on the failed event ID:
-
-```bash
 curl -i -b cookies.txt -X POST "$BASE_URL/api/events/<EVENT_UUID>/retry"
 ```
 
@@ -254,15 +270,7 @@ Expected response: `HTTP/1.1 202 Accepted`
 }
 ```
 
-The pipeline re-delivers the payload, succeeds with `200 OK`, transitions status to `Completed`, and clears the failure message.
-
----
-
-## Architecture & Event Lifecycle
-
-1. **Received**: The incoming webhook passes timing-safe secret verification and body parsing. It is stored in Supabase with `status: 'Received'` and `attempt_count: 0`. The server publishes the `Received` state over SSE and replies with `201 Created`.
-2. **Completed or Failed**: The background pipeline forwards the stored payload to `DOWNSTREAM_URL` with a 5-second timeout. If downstream responds with HTTP 2xx, status transitions to `Completed`. If it returns non-2xx, times out, or encounters network errors, status transitions to `Failed` with an incremented `attempt_count` and recorded `failure_reason`. The updated row is broadcast over SSE.
-3. **Manual Retry**: An authenticated administrator inspects a `Failed` event and clicks "Retry Webhook Delivery". The server conditionally updates the row to `Received`, broadcasts the change via SSE, and re-launches the delivery pipeline. If downstream fails again, the event returns to `Failed` and the retry button remains immediately enabled.
+The pipeline re-delivers the payload, succeeds with `200 OK`, transitions status to `Completed`, and clears the failure reason.
 
 ---
 
@@ -270,80 +278,10 @@ The pipeline re-delivers the payload, succeeds with `200 OK`, transitions status
 
 | Technology | Role | Rationale |
 |---|---|---|
-| React 19 + Vite | Frontend Dashboard | Fast local builds, minimal bundle overhead, responsive state synchronization, and component modularity. |
+| React 19 + Vite | Frontend Dashboard | Rapid local builds, minimal bundle footprint, responsive state management, and component modularity. |
 | Node.js + Express | Backend Application Server | Middleware ordering flexibility allowing raw body buffering before JSON parsing, native async/await, and single-port SPA serving. |
-| Supabase (PostgreSQL) | Database & Storage | ACID transactions, native UUID keys, strict unique constraints for deduplication, and atomic conditional update semantics. |
-| Server-Sent Events (SSE) | Real-Time Broadcast | Unidirectional server-to-client streaming using standard HTTP (`text/event-stream`), built-in browser reconnection, and zero WebSocket upgrade complexity. |
-
----
-
-## Design Decisions
-
-- **Insert-Then-Catch for Idempotency**: Rather than running a read query before write (which leaves a concurrency race condition window), the webhook route runs a direct `INSERT`. PostgreSQL enforces a `UNIQUE` constraint on `idempotency_key`. Collisions raise database error `23505`, which is caught to update the timestamp and return `200 OK` with `duplicate: true`, eliminating race conditions.
-- **Atomic Conditional UPDATE for Retry**: To prevent concurrent duplicate retries, the server runs `UPDATE events SET status = 'Received', updated_at = now() WHERE id = :id AND status = 'Failed' RETURNING *`. PostgreSQL row locks ensure only one caller can match the condition and win the claim; concurrent callers receive zero rows and an immediate `409 Conflict`.
-- **Timing-Safe Secret Comparison**: Plain string equality (`===`) exits early on the first mismatched character. We hash both strings with SHA-256 into 32-byte buffers and compare with `crypto.timingSafeEqual`, guaranteeing constant execution time and eliminating timing side-channel attacks.
-- **httpOnly Cookie with Versioned JWT**: Admin authentication issues an `httpOnly`, `sameSite: 'strict'`, `secure` cookie named `eventbridge_token`. To enable instantaneous global token revocation without a database blocklist, tokens embed a numeric `auth_version`. The server increments `auth_version` in Supabase during "Sign Out Everywhere", immediately invalidating older tokens across all devices.
-- **Payload Privacy on Public APIs**: Public endpoints (`GET /api/events`) and public SSE streams omit raw payloads and internal failure traces to protect customer PII and API keys. Full payloads are accessible only through `GET /api/events/:id` guarded by admin session verification.
-- **Server-Sent Events over WebSockets**: The dashboard requires only one-way server-to-browser notifications. SSE operates over regular HTTP, requires no custom gateway, and includes native browser reconnection.
-
----
-
-## Database Schema (What Gets Stored on the Server)
-
-The database consists of two tables created in Supabase PostgreSQL:
-
-### 1. `events` Table
-
-Persists incoming webhook deliveries, idempotency signatures, and execution statuses:
-
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| `id` | UUID | PRIMARY KEY | Unique event identifier (`gen_random_uuid()`) |
-| `idempotency_key` | TEXT | UNIQUE, NOT NULL | Deduplication key (header or SHA-256 body hash) |
-| `payload` | JSONB | NOT NULL | Raw ingested webhook payload |
-| `status` | TEXT | NOT NULL | Current state (`'Received'`, `'Completed'`, `'Failed'`) |
-| `attempt_count` | INTEGER | NOT NULL | Number of delivery attempts (defaults to `0`) |
-| `failure_reason` | TEXT | NULLABLE | Downstream error trace or timeout message |
-| `created_at` | TIMESTAMPTZ | NOT NULL | Initial ingestion timestamp |
-| `updated_at` | TIMESTAMPTZ | NOT NULL | Timestamp of last state change |
-
-```sql
-CREATE TABLE events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  idempotency_key TEXT UNIQUE NOT NULL,
-  payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Received',
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  failure_reason TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_events_created_at ON events (created_at DESC);
-CREATE INDEX idx_events_status_updated ON events (status, updated_at);
-```
-
-### 2. `settings` Table
-
-Maintains runtime configurations across server restarts and process instances:
-
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| `key` | TEXT | PRIMARY KEY | Configuration key name |
-| `value` | TEXT | NOT NULL | String-serialized configuration value |
-| `updated_at` | TIMESTAMPTZ | NOT NULL | Last update timestamp |
-
-```sql
-CREATE TABLE settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-INSERT INTO settings (key, value) VALUES
-  ('mock_healthy', 'true'),
-  ('auth_version', '1');
-```
+| Supabase (PostgreSQL) | Database & Storage | ACID transactions, native UUID generation, strict unique constraints for deduplication, and atomic conditional update semantics. |
+| Server-Sent Events (SSE) | Real-Time Broadcast | Unidirectional server-to-client streaming via standard HTTP (`text/event-stream`), built-in browser reconnection, and zero WebSocket gateway complexity. |
 
 ---
 
@@ -351,7 +289,7 @@ INSERT INTO settings (key, value) VALUES
 
 | Method | Path | Auth Required | Purpose | Status Codes |
 |---|---|---|---|---|
-| GET | `/api/health` | None | Basic server liveness check (does not touch database) | 200 |
+| GET | `/api/health` | None | Basic server liveness check (does not query database) | 200 |
 | GET | `/api/keepalive` | None | Lightweight database uptime ping (`SELECT id FROM events LIMIT 1`) | 200, 500 |
 | POST | `/api/webhook` | `x-webhook-secret` header | Ingest incoming webhook with secret and idempotency validation | 201, 200, 400, 401, 500 |
 | POST | `/api/mock-downstream` | None | Simulated destination endpoint (200 OK or 503 Outage) | 200, 503 |
@@ -424,7 +362,7 @@ copy server\.env.example server\.env
 cp server/.env.example server/.env
 ```
 
-Configure the variable names in `server/.env`:
+Configure the variable values in `server/.env`:
 
 | Variable | Purpose |
 |---|---|
@@ -439,8 +377,6 @@ Configure the variable names in `server/.env`:
 | `DOWNSTREAM_DELAY_MS` | Artificial response delay in milliseconds for testing (default: `0`). |
 
 ### 4. Install Dependencies
-
-Install dependencies across both client and server:
 
 ```bash
 npm install --prefix client
@@ -492,15 +428,7 @@ EventBridge is configured for deployment as a single unified service on Render b
 
 ### Render Environment Variables
 
-Configure the following environment variable names in the Render Dashboard under **Environment**:
-
-- `NODE_ENV`: Set to `production`
-- `SUPABASE_URL`: Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service role secret key
-- `WEBHOOK_SECRET`: Production webhook authorization secret
-- `ADMIN_PASSWORD`: Administrator dashboard password
-- `SESSION_SECRET`: Long random cryptographic string for JWT cookies
-- `DOWNSTREAM_URL`: (Optional) Downstream destination. Defaults to `http://127.0.0.1:$PORT/api/mock-downstream`
+In the Render Dashboard under **Environment**, set `NODE_ENV=production` and provide the runtime credentials (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WEBHOOK_SECRET`, `ADMIN_PASSWORD`, `SESSION_SECRET`, and optional `DOWNSTREAM_URL`) as specified in the [Local Setup Guide](#3-configure-environment-variables).
 
 ### Uptime Keepalive Monitor
 
