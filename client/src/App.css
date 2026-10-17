@@ -130,21 +130,19 @@
 
 .brand-logo-outer {
   height: 42px;
-  width: 72px;
+  width: 74px;
   border-radius: 10px;
-  background: #ffffff;
-  padding: 3px 6px;
-  box-shadow: 0 4px 14px rgba(0, 180, 216, 0.25), inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+  background: transparent;
+  padding: 2px 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-  overflow: hidden;
+  transition: transform 0.2s ease;
+  overflow: visible;
 }
 
 .brand-logo-wrap:hover .brand-logo-outer {
-  transform: scale(1.04);
-  box-shadow: 0 6px 18px rgba(0, 180, 216, 0.4);
+  transform: scale(1.05);
 }
 
 .brand-logo-img {
@@ -152,6 +150,7 @@
   width: 100%;
   object-fit: contain;
   display: block;
+  filter: drop-shadow(0 2px 8px rgba(0, 180, 216, 0.35));
 }
 
 .brand-pulse-dot {

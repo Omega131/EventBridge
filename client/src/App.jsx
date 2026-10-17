@@ -472,7 +472,6 @@ export default function App() {
           <div className="brand-info">
             <div className="brand-title-row">
               <span className="brand-title">EventBridge</span>
-              <span className="brand-version-tag">v2.0</span>
             </div>
             <span className="brand-subtitle">Real-time Webhook Ingestion Engine</span>
           </div>
