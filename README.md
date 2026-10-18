@@ -56,7 +56,7 @@ flowchart TD
 
 ## Live Demo & Video
 
-- **Production URL**: <LIVE_URL>
+- **Production URL**: [<LIVE_URL>](https://eventbridge-bgcp.onrender.com/)
 - **Demonstration Video**: <VIDEO_URL>
 
 Note: On the free cloud hosting tier (Render), the application container automatically spins down after 15 minutes of inactivity. The initial HTTP request after an idle window may take approximately 50 to 60 seconds while the container initializes.
