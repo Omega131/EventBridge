@@ -1,112 +1,114 @@
 /* ==========================================================================
    EventBridge Design System & Design Tokens
-   Next-Generation High-Tech Telemetry & Glassmorphic Dashboard
+   Option 14: 16-Bit Neo-Geo Arcade Engine & Chiptune Console
+   Strict Constraint: 100% Solid Flat Colors | Zero Gradients | Hard Shadows
    ========================================================================== */
 
 @import "tailwindcss";
 
 :root {
-  /* ─── Light Mode Palette (Ultra-Crisp Porcelain & Obsidian Accents) ─── */
-  --bg-page: #f8fafc;
-  --bg-surface: rgba(255, 255, 255, 0.88);
-  --bg-surface-elevated: #ffffff;
-  --bg-subtle: #f1f5f9;
-  --bg-muted: #e2e8f0;
-  --bg-code: #090d16;
-  --bg-backdrop: rgba(15, 23, 42, 0.45);
-
-  --text-primary: #090d16;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
-  --text-dim: #94a3b8;
-  --text-code: #f8fafc;
-
-  --border-subtle: rgba(226, 232, 240, 0.8);
-  --border-default: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --border-glass: rgba(255, 255, 255, 0.6);
-
-  /* Primary Electric Violet / Royal Indigo */
-  --accent-primary: #6366f1;
-  --accent-hover: #4f46e5;
-  --accent-light: rgba(99, 102, 241, 0.1);
-  --accent-glow: rgba(99, 102, 241, 0.25);
-  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #3b82f6 100%);
-
-  /* Status Colors */
-  --status-received-bg: rgba(241, 245, 249, 0.9);
-  --status-received-text: #475569;
-  --status-received-border: #cbd5e1;
-  --status-received-dot: #64748b;
-
-  --status-completed-bg: rgba(236, 253, 245, 0.9);
-  --status-completed-text: #059669;
-  --status-completed-border: #a7f3d0;
-  --status-completed-dot: #10b981;
-
-  --status-failed-bg: rgba(255, 241, 242, 0.9);
-  --status-failed-text: #e11d48;
-  --status-failed-border: #fecdd3;
-  --status-failed-dot: #f43f5e;
-
-  /* Shadows & Specular Edge Lighting */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 12px -1px rgba(0, 0, 0, 0.06), 0 2px 6px -2px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 20px 35px -8px rgba(0, 0, 0, 0.08), 0 8px 16px -6px rgba(0, 0, 0, 0.03);
-  --shadow-glow: 0 0 25px rgba(99, 102, 241, 0.2);
-
-  --font-sans: 'Plus Jakarta Sans', 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-display: 'Outfit', 'Plus Jakarta Sans', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-[data-theme="dark"] {
-  /* ─── Cyber Dark Mode (Deep Midnight Obsidian & Neon Plasma) ─── */
-  --bg-page: #06080f;
-  --bg-surface: rgba(13, 19, 33, 0.75);
-  --bg-surface-elevated: rgba(20, 29, 49, 0.85);
-  --bg-subtle: rgba(25, 36, 61, 0.6);
-  --bg-muted: rgba(30, 44, 76, 0.7);
-  --bg-code: #03060d;
-  --bg-backdrop: rgba(3, 5, 12, 0.8);
+  /* ─── 16-Bit Neo-Geo Arcade Engine Palette (Default & Theme) ─── */
+  --bg-page: #121324;
+  --bg-surface: #181930;
+  --bg-surface-elevated: #1e1f3b;
+  --bg-subtle: #252646;
+  --bg-muted: #2d2e53;
+  --bg-code: #0b0c16;
+  --bg-backdrop: rgba(10, 11, 20, 0.88);
 
   --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
-  --text-code: #f1f5f9;
+  --text-secondary: #d0c5e8;
+  --text-muted: #9f94bf;
+  --text-dim: #736991;
+  --text-code: #00f5d4;
 
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --border-glass: rgba(255, 255, 255, 0.12);
+  --border-subtle: #2d2345;
+  --border-default: #7b2cbf;
+  --border-strong: #9d4edd;
+  --border-glass: #9d4edd;
 
-  --accent-primary: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-light: rgba(99, 102, 241, 0.18);
-  --accent-glow: rgba(99, 102, 241, 0.35);
-  --accent-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #06b6d4 100%);
+  /* Arcade Accents */
+  --accent-primary: #9d4edd;
+  --accent-hover: #c77dff;
+  --accent-light: #2a1b4e;
+  --accent-glow: #9d4edd;
+  --accent-gradient: #7b2cbf; /* Strictly Zero Gradients: Solid Arcade Purple */
 
-  /* Dark Status Colors with Neon Glow */
-  --status-received-bg: rgba(30, 41, 59, 0.6);
-  --status-received-text: #cbd5e1;
-  --status-received-border: rgba(51, 65, 85, 0.7);
-  --status-received-dot: #94a3b8;
+  /* Arcade Status Colors */
+  --status-received-bg: #ffd166;
+  --status-received-text: #1a1400;
+  --status-received-border: #ffd166;
+  --status-received-dot: #ffd166;
 
-  --status-completed-bg: rgba(6, 78, 59, 0.35);
-  --status-completed-text: #34d399;
-  --status-completed-border: rgba(16, 185, 129, 0.35);
-  --status-completed-dot: #10b981;
+  --status-completed-bg: #00f5d4;
+  --status-completed-text: #051a17;
+  --status-completed-border: #00f5d4;
+  --status-completed-dot: #00f5d4;
 
-  --status-failed-bg: rgba(136, 19, 55, 0.35);
-  --status-failed-text: #fb7185;
-  --status-failed-border: rgba(244, 63, 94, 0.35);
-  --status-failed-dot: #f43f5e;
+  --status-failed-bg: #f72585;
+  --status-failed-text: #ffffff;
+  --status-failed-border: #f72585;
+  --status-failed-dot: #f72585;
 
-  --shadow-sm: 0 2px 4px 0 rgba(0, 0, 0, 0.5);
-  --shadow-md: 0 8px 24px -4px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 24px 48px -12px rgba(0, 0, 0, 0.8);
-  --shadow-glow: 0 0 35px rgba(99, 102, 241, 0.35);
+  /* Zero Blur Hard Pixel Shadows */
+  --shadow-sm: 2px 2px 0px #000000;
+  --shadow-md: 3px 3px 0px #000000;
+  --shadow-lg: 5px 5px 0px #000000;
+  --shadow-glow: 0 0 0 2px #9d4edd;
+
+  /* Monospace & Pixel-Engine Typography */
+  --font-sans: 'JetBrains Mono', 'Space Mono', 'Consolas', monospace;
+  --font-display: 'JetBrains Mono', 'Space Mono', 'Consolas', monospace;
+  --font-mono: 'JetBrains Mono', 'Space Mono', 'Consolas', monospace;
+}
+
+[data-theme="dark"],
+[data-theme="light"] {
+  /* Option 14 Arcade Theme stays true to the 16-Bit Neo-Geo Console */
+  --bg-page: #101120;
+  --bg-surface: #181930;
+  --bg-surface-elevated: #1e1f3b;
+  --bg-subtle: #252646;
+  --bg-muted: #2d2e53;
+  --bg-code: #0b0c16;
+  --bg-backdrop: rgba(10, 11, 20, 0.88);
+
+  --text-primary: #f8fafc;
+  --text-secondary: #d0c5e8;
+  --text-muted: #9f94bf;
+  --text-dim: #736991;
+  --text-code: #00f5d4;
+
+  --border-subtle: #2d2345;
+  --border-default: #7b2cbf;
+  --border-strong: #9d4edd;
+  --border-glass: #9d4edd;
+
+  --accent-primary: #9d4edd;
+  --accent-hover: #c77dff;
+  --accent-light: #2a1b4e;
+  --accent-glow: #9d4edd;
+  --accent-gradient: #7b2cbf;
+
+  --status-received-bg: #ffd166;
+  --status-received-text: #1a1400;
+  --status-received-border: #ffd166;
+  --status-received-dot: #ffd166;
+
+  --status-completed-bg: #00f5d4;
+  --status-completed-text: #051a17;
+  --status-completed-border: #00f5d4;
+  --status-completed-dot: #00f5d4;
+
+  --status-failed-bg: #f72585;
+  --status-failed-text: #ffffff;
+  --status-failed-border: #f72585;
+  --status-failed-dot: #f72585;
+
+  --shadow-sm: 2px 2px 0px #000000;
+  --shadow-md: 3px 3px 0px #000000;
+  --shadow-lg: 5px 5px 0px #000000;
+  --shadow-glow: 0 0 0 2px #9d4edd;
 }
 
 /* ─── Global Reset & Typography ─── */
@@ -120,7 +122,6 @@ html {
   font-family: var(--font-sans);
   background-color: var(--bg-page);
   color: var(--text-primary);
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   scroll-behavior: smooth;
 }
 
@@ -131,26 +132,28 @@ body {
   min-height: 100vh;
   line-height: 1.5;
   overflow-x: hidden;
-  transition: background-color 0.25s ease, color 0.25s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Custom Sleek Scrollbar */
+/* Custom 16-Bit Arcade Scrollbar */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #0b0c16;
+  border-left: 1px solid #2d2345;
 }
 
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 9999px;
+  border: 1px solid #000000;
+  border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+  background: var(--accent-hover);
 }
 
 .font-mono, code, pre {
@@ -162,8 +165,9 @@ body {
 }
 
 :focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--bg-surface-elevated), 0 0 0 4px var(--accent-primary);
+  outline: 2px solid #00f5d4;
+  outline-offset: 1px;
+  box-shadow: 2px 2px 0px #000000;
 }
 
 /* Keyframe animations */
@@ -192,27 +196,22 @@ body {
   100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-@keyframes pulseGlow {
-  0%, 100% { opacity: 0.6; transform: scale(1); }
-  50% { opacity: 0.9; transform: scale(1.05); }
-}
-
 .animate-fade-in {
-  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeIn 0.15s ease-out forwards;
 }
 
 .animate-scale-in {
-  animation: scaleIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: scaleIn 0.15s ease-out forwards;
 }
 
 .animate-slide-in {
-  animation: slideInRight 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideInRight 0.2s ease-out forwards;
 }
 
 .animate-slide-up {
-  animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideUp 0.15s ease-out forwards;
 }
 
 .animate-pop-in {
-  animation: popIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: popIn 0.15s ease-out forwards;
 }
