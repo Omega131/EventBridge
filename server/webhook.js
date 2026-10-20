@@ -239,6 +239,7 @@ async function handleWebhook(req, res) {
 
     console.log('Responding 200 — duplicate event acknowledged.');
     return res.status(200).json({
+      success: true,
       id: result.id,
       status: result.status,
       duplicate: true,
@@ -256,6 +257,7 @@ async function handleWebhook(req, res) {
 
   console.log('Responding 201 — new event saved.');
   res.status(201).json({
+    success: true,
     id: result.id,
     status: result.status,
     duplicate: false,

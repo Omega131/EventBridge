@@ -219,7 +219,7 @@ export default function WebhookDispatcher({
       const duration = Math.round(performance.now() - startTime);
       const data = await response.json();
 
-      if (response.ok && data.success) {
+      if (response.ok && (data.success || data.id)) {
         sound.playSuccess(soundEnabled);
         confetti({
           particleCount: 45,
