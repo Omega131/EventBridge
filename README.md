@@ -56,10 +56,16 @@ flowchart TD
 
 ## Live Demo & Video
 
-- **Production URL**: [<LIVE_URL>](https://eventbridge-bgcp.onrender.com/)
-- **Demonstration Video**: <VIDEO_URL>
+- **Production URL**: [LIVE URL](https://eventbridge-bgcp.onrender.com/)
+- **Demonstration Video**: 
 
-Note: On the free cloud hosting tier (Render), the application container automatically spins down after 15 minutes of inactivity. The initial HTTP request after an idle window may take approximately 50 to 60 seconds while the container initializes.
+
+
+https://github.com/user-attachments/assets/3531f296-65a2-42b4-b763-c0fe63caaa06
+
+
+
+Note: On the free cloud hosting tier (Render), the application container automatically spins down after 15 minutes of inactivity. The initial HTTP request after an idle window may take approximately 50 to 60 seconds while the container initializes. A cronjob has been setup but its reliability is questionable
 
 ---
 
