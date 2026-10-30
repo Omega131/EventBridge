@@ -84,7 +84,6 @@ EventBridge/
 │   ├── webhook.js       # Webhook ingestion handler and idempotency logic
 │   ├── .env.example     # Environment variable configuration template
 │   └── package.json
-├── .env.example         # Root environment variable template
 ├── package.json         # Unified build and start scripts for Render
 └── README.md
 ```
